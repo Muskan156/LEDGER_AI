@@ -613,6 +613,7 @@ if uploaded_file:
 
             review_result = run_review_engine(
                 fmt["statement_id"],
+                document_id,
                 file_path,
                 full_text
             )
@@ -690,6 +691,7 @@ if uploaded_file:
 
             review_result = run_review_engine(
                 statement_id,
+                document_id,
                 file_path,
                 full_text
             )

@@ -156,3 +156,38 @@ def insert_statement_transactions(
     conn.commit()
     cursor.close()
     conn.close()
+
+
+def get_document_by_id(document_id: int):
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT *
+        FROM documents
+        WHERE document_id = %s
+    """, (document_id,))
+
+    document = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    return document    
+
+def get_document_password(document_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT encrypted_password
+        FROM document_password
+        WHERE document_id = %s
+    """, (document_id,))
+
+    result = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    return result[0] if result else None
