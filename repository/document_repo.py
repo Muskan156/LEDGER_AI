@@ -1,145 +1,157 @@
-import json
-from db.connection import get_connection
+# document_repo.py
+
+from db import get_connection
+from typing import List, Dict, Optional
 
 
-# ---------------------------------------------------
-# INSERT DOCUMENT
-# ---------------------------------------------------
-def insert_document(user_id: int,
-                    document_type_id: int,
-                    file_name: str,
-                    file_path: str,
-                    is_password_protected: bool):
+# ==========================================================
+# DOCUMENT TABLE OPERATIONS
+# ==========================================================
+
+def create_document(
+    user_id: int,
+    file_name: str,
+    file_path: str,
+    is_password_protected: bool
+) -> int:
 
     conn = get_connection()
     cursor = conn.cursor()
 
-    query = """
+    cursor.execute("""
         INSERT INTO documents
-        (user_id, document_type_id, file_name, file_path, is_password_protected, status)
-        VALUES (%s, %s, %s, %s, %s, 'UPLOADED')
-    """
-
-    cursor.execute(query, (
-        user_id,
-        document_type_id,
-        file_name,
-        file_path,
-        is_password_protected
-    ))
+        (user_id, file_name, file_path, is_password_protected, status)
+        VALUES (%s, %s, %s, %s, 'UPLOADED')
+    """, (user_id, file_name, file_path, is_password_protected))
 
     document_id = cursor.lastrowid
     conn.commit()
-
     cursor.close()
     conn.close()
 
     return document_id
 
-def get_document_type_id(type_code: str):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
 
-    cursor.execute(
-        "SELECT document_type_id FROM document_types WHERE type_code = %s",
-        (type_code,)
-    )
-
-    row = cursor.fetchone()
-
-    cursor.close()
-    conn.close()
-
-    if not row:
-        raise ValueError(f"Document type {type_code} not found")
-
-    return row["document_type_id"]
-
-# ---------------------------------------------------
-# INSERT PASSWORD
-# ---------------------------------------------------
-def insert_document_password(document_id: int, encrypted_password: str):
-
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    query = """
-        INSERT INTO document_password (document_id, encrypted_password)
-        VALUES (%s, %s)
-    """
-
-    cursor.execute(query, (document_id, encrypted_password))
-    conn.commit()
-
-    cursor.close()
-    conn.close()
-
-
-# ---------------------------------------------------
-# UPDATE DOCUMENT STATUS
-# ---------------------------------------------------
 def update_document_status(document_id: int, status: str):
-
     conn = get_connection()
     cursor = conn.cursor()
 
-    query = """
+    cursor.execute("""
         UPDATE documents
         SET status = %s
         WHERE document_id = %s
-    """
+    """, (status, document_id))
 
-    cursor.execute(query, (status, document_id))
     conn.commit()
-
     cursor.close()
     conn.close()
 
 
-# ---------------------------------------------------
-# INSERT AUDIT
-# ---------------------------------------------------
-def insert_upload_audit(document_id: int, status: str, error_message=None):
-
+def link_statement_to_document(document_id: int, statement_id: int):
     conn = get_connection()
     cursor = conn.cursor()
 
-    query = """
-        INSERT INTO document_upload_audit
-        (document_id, status, error_message)
+    cursor.execute("""
+        UPDATE documents
+        SET statement_id = %s
+        WHERE document_id = %s
+    """, (statement_id, document_id))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+# ==========================================================
+# PASSWORD STORAGE
+# ==========================================================
+
+def save_document_password(document_id: int, encrypted_password: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO document_password (document_id, encrypted_password)
+        VALUES (%s, %s)
+    """, (document_id, encrypted_password))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+# ==========================================================
+# AUDIT LOG
+# ==========================================================
+
+def insert_upload_audit(document_id: int, status: str, error_message: Optional[str] = None):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO document_upload_audit (document_id, status, error_message)
         VALUES (%s, %s, %s)
-    """
+    """, (document_id, status, error_message))
 
-    cursor.execute(query, (document_id, status, error_message))
     conn.commit()
-
     cursor.close()
     conn.close()
 
 
-# ---------------------------------------------------
-# INSERT TEXT EXTRACTION
-# ---------------------------------------------------
-def insert_text_extraction(document_id: int,
-                           extracted_text: str,
-                           extraction_status="SUCCESS",
-                           error_message=None):
+# ==========================================================
+# TEXT EXTRACTION STORAGE
+# ==========================================================
 
+def save_extracted_text(
+    document_id: int,
+    extracted_text: str,
+    method: str = "PDF_TEXT",
+    status: str = "SUCCESS",
+    error_message: Optional[str] = None
+):
     conn = get_connection()
     cursor = conn.cursor()
 
-    query = """
+    cursor.execute("""
         INSERT INTO document_text_extractions
         (document_id, extraction_method, extracted_text, extraction_status, error_message)
-        VALUES (%s, 'PDF_TEXT', %s, %s, %s)
-    """
+        VALUES (%s, %s, %s, %s, %s)
+    """, (document_id, method, extracted_text, status, error_message))
 
-    cursor.execute(query, (
-        document_id,
-        extracted_text,
-        extraction_status,
-        error_message
-    ))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+# ==========================================================
+# STAGING TRANSACTIONS STORAGE
+# ==========================================================
+
+def insert_statement_transactions(
+    document_id: int,
+    statement_id: int,
+    transactions: List[Dict]
+):
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    for txn in transactions:
+        cursor.execute("""
+            INSERT INTO statement_transactions
+            (document_id, statement_id, txn_date, debit, credit, balance,
+             description, confidence)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            document_id,
+            statement_id,
+            txn.get("date"),
+            txn.get("debit"),
+            txn.get("credit"),
+            txn.get("balance"),
+            txn.get("details"),
+            txn.get("confidence")
+        ))
 
     conn.commit()
     cursor.close()

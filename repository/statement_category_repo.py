@@ -152,7 +152,7 @@ def insert_statement_category(
             statement_type,
             format_name,
             institution_name,
-            ifsc_code,                      -- ✅ NEW COLUMN
+            ifsc_code,                      
             statement_identifier,
             extraction_logic,
             match_threshold,
@@ -168,9 +168,9 @@ def insert_statement_category(
             statement_type,
             format_name,
             institution_name,
-            ifsc_code,                       # ✅ INSERT VALUE
+            ifsc_code,                      
             json.dumps(identifier_json),
-            json.dumps(extraction_logic_json),
+            extraction_logic_json,
             threshold
         )
     )

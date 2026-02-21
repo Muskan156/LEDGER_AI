@@ -227,19 +227,19 @@ def validate_transactions(code_txns, llm_txns):
 
             score = 0
 
-            # 1️⃣ Date match (strong weight)
+            # 1Date match (strong weight)
             if code_date and llm_date and code_date == llm_date:
                 score += 3
 
-            # 2️⃣ Amount match (strong weight)
+            # 2Amount match (strong weight)
             if abs(code_amount - llm_amount) < 1:
                 score += 3
 
-            # 3️⃣ Balance match (medium weight)
+            # 3Balance match (medium weight)
             if abs(code_balance - llm_balance) < 1:
                 score += 2
 
-            # 4️⃣ Description similarity (soft weight)
+            # 4Description similarity (soft weight)
             desc_similarity = calculate_similarity(code_desc, llm_desc)
             if desc_similarity > 0.7:
                 score += 2

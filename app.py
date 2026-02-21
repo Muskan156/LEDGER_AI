@@ -355,6 +355,9 @@
 #     login_screen()
 # else:
 #     upload_screen()
+
+
+
 import streamlit as st
 import tempfile
 import json
@@ -401,6 +404,99 @@ def get_formats_by_bank_code(bank_code: str):
 # ---------------------------------------------------
 # UI
 # ---------------------------------------------------
+# ==========================================================
+# AUTH LAYER (ADD AT TOP BEFORE EVERYTHING)
+# ==========================================================
+
+import hashlib
+import uuid
+import datetime
+from db.connection import get_connection
+
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+
+def hash_password(password: str):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def create_session(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    token = str(uuid.uuid4())
+    expires_at = datetime.datetime.now() + datetime.timedelta(hours=12)
+
+    cursor.execute("""
+        INSERT INTO user_sessions (user_id, token, expires_at)
+        VALUES (%s, %s, %s)
+    """, (user_id, token, expires_at))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    st.session_state.user_id = user_id
+
+# ---------------- LOGIN SCREEN ----------------
+if st.session_state.user_id is None:
+
+    st.title("LedgerAI Login")
+
+    tab1, tab2 = st.tabs(["Login", "Register"])
+
+    with tab1:
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+
+        if st.button("Login"):
+
+            conn = get_connection()
+            cursor = conn.cursor(dictionary=True)
+
+            cursor.execute(
+                "SELECT * FROM users WHERE email=%s AND status='ACTIVE'",
+                (email,)
+            )
+            user = cursor.fetchone()
+
+            cursor.close()
+            conn.close()
+
+            if not user:
+                st.error("User not found")
+            elif user["password_hash"] != hash_password(password):
+                st.error("Invalid password")
+            else:
+                create_session(user["user_id"])
+                st.success("Login successful")
+                st.rerun()
+
+    with tab2:
+        new_email = st.text_input("New Email")
+        new_password = st.text_input("New Password", type="password")
+
+        if st.button("Register"):
+
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            try:
+                cursor.execute("""
+                    INSERT INTO users (email, password_hash)
+                    VALUES (%s, %s)
+                """, (new_email, hash_password(new_password)))
+
+                conn.commit()
+                st.success("Registration successful. Please login.")
+
+            except:
+                st.error("User already exists")
+
+            cursor.close()
+            conn.close()
+
+    st.stop()
+
 st.set_page_config(layout="wide")
 st.title("LedgerAI - Bank Statement Engine")
 
@@ -413,7 +509,39 @@ if uploaded_file:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_file.read())
         file_path = tmp.name
+    # ---------------------------------------------------
+    # STORE DOCUMENT IN DB
+    # ---------------------------------------------------
+    conn = get_connection()
+    cursor = conn.cursor()
 
+    cursor.execute("""
+                   INSERT INTO documents (user_id, file_name, file_path, is_password_protected, status)
+                   VALUES (%s, %s, %s, %s, 'UPLOADED')
+                """, (
+                    st.session_state.user_id,
+                    uploaded_file.name,file_path,
+                    bool(password)
+    ))
+
+    document_id = cursor.lastrowid
+
+    # Store password if exists
+    if password:
+        cursor.execute("""
+        INSERT INTO document_password (document_id, encrypted_password)
+        VALUES (%s, %s)
+        """, (document_id, password))   # You can encrypt later
+
+    # Audit entry
+    cursor.execute("""
+    INSERT INTO document_upload_audit (document_id, status)
+    VALUES (%s, 'UPLOADED')
+     """, (document_id,))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
     if st.button("Run Processing"):
 
         # ---------------------------------------------------
@@ -422,6 +550,33 @@ if uploaded_file:
         st.subheader("Extracting PDF Content")
         pages = extract_pages(file_path, password)
         full_text = "\n".join(pages)
+        # ---------------------------------------------------
+        # STORE EXTRACTED TEXT
+        # ---------------------------------------------------
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+         INSERT INTO document_text_extractions
+         (document_id, extraction_method, extracted_text, extraction_status)
+          VALUES (%s, 'PDF_TEXT', %s, 'SUCCESS')
+         """, (document_id, full_text))
+
+        # Update document status to PROCESSING
+        cursor.execute("""
+          UPDATE documents SET status='PROCESSING'
+          WHERE document_id=%s
+          """, (document_id,))
+
+        # Audit entry
+        cursor.execute("""
+          INSERT INTO document_upload_audit (document_id, status)
+          VALUES (%s, 'PROCESSING')
+          """, (document_id,))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
         st.success("PDF extracted successfully")
 
         # ---------------------------------------------------
@@ -451,10 +606,9 @@ if uploaded_file:
             st.warning("⚠ Format already exists for this bank")
 
             fmt = formats[0]
-
+            statement_id = fmt["statement_id"]
             st.write(f"**Format Name:** {fmt['format_name']}")
             st.write(f"**Status:** {fmt['status']}")
-
             st.info("Running Review Engine on existing format...")
 
             review_result = run_review_engine(
@@ -462,7 +616,7 @@ if uploaded_file:
                 file_path,
                 full_text
             )
-
+            st.write(review_result)
         else:
 
             st.info("No format found. Generating new format...")
@@ -595,7 +749,39 @@ if uploaded_file:
 
             from repository.statement_category_repo import activate_statement_category
             activate_statement_category(statement_id)
+            # ---------------------------------------------------
+            # STORE STAGING TRANSACTIONS
+            # ---------------------------------------------------
+            conn = get_connection()
+            cursor = conn.cursor()
 
+            for txn in code_txns:
+                cursor.execute("""
+                    INSERT INTO statement_transactions
+                    (document_id, statement_id, txn_date,
+                    debit, credit, balance, description, confidence)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (document_id,statement_id,txn.get("date"),txn.get("debit"),txn.get("credit"),
+                     txn.get("balance"),
+                     txn.get("details"),
+                     txn.get("confidence")))
+
+            # Update document status
+            cursor.execute("""
+             UPDATE documents SET status='COMPLETED',
+             statement_id=%s
+              WHERE document_id=%s
+             """, (statement_id, document_id))
+
+            # Audit entry
+            cursor.execute("""
+             INSERT INTO document_upload_audit (document_id, status)
+             VALUES (%s, 'COMPLETED')
+              """, (document_id,))
+
+            conn.commit()
+            cursor.close()
+            conn.close()
        # CASE 2: 75–90% → Human Loop
         elif 75 <= overall_similarity < 90:
 

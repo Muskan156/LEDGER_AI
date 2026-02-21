@@ -264,7 +264,7 @@ STRICT REGEX DEFINITIONS (COPY EXACTLY — DO NOT MODIFY)
 You MUST copy these two patterns EXACTLY as written.
 Do NOT modify, simplify, or rewrite them.
 
-DATE_ANCHOR_REGEX = r'^\\s*(?:\\d+\\s*)?(\\d{{1,2}}[ \\/\\-](?:\\d{{1,2}}|[A-Za-z]{{3}})[ \\/\\-]\\d{{2,4}}|\\d{{4}}-\\d{{2}}-\\d{{2}})'
+DATE_ANCHOR_REGEX = r'^\\s*(\\d{{1,2}}[ \\/\\-](?:\\d{{1,2}}|[A-Za-z]{{3}})[ \\/\\-]\\d{{2,4}}|\\d{{4}}-\\d{{2}}-\\d{{2}})'
 
 MONEY_REGEX = r'(\\d+(?:,\\d{{2}})*(?:,\\d{{3}})*\\.\\d{{2}})'
 
@@ -349,14 +349,21 @@ Structure MUST be:
 
             # initialize inside this block
             date = match.group(1)
+            After extracting date, validate it:
+               If the original line starts with two digits (line[0:2].isdigit())
+               AND extracted date starts with only one digit,
+               then rebuild date as stripped[0:10] and validate again.
             details = ""
             debit = None
             credit = None
             balance = None
             confidence = 0.5
-
+            
             amounts = re.findall(MONEY_REGEX, stripped)
-
+            After extracting date and repairing it:
+              Extract amounts using MONEY_REGEX.
+              If no money values are found in the line:
+                    continue (skip this transaction completely)
             if amounts:
                 numeric_amounts = [float(a.replace(",", "")) for a in amounts]
 
@@ -385,14 +392,14 @@ Structure MUST be:
                 if debit is not None or credit is not None:
                     confidence = 1.0
 
-            previous_balance = balance
+            if balance is not None:
+                previous_balance = balance
 
             # details cleanup
             details = re.sub(DATE_ANCHOR_REGEX, "", stripped)
             details = re.sub(MONEY_REGEX, "", details)
             details = details.replace("Dr","").replace("Cr","")
             details = details.strip()
-
             transactions.append({{
                 "date": date,
                 "details": details,
@@ -486,3 +493,4 @@ def extract_transactions_using_logic(
 
     except Exception as e:
         raise RuntimeError(f"LLM extraction execution failed: {str(e)}")
+    

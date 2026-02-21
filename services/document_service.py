@@ -1,107 +1,104 @@
-import base64
+# document_service.py
+
+import os
+from typing import Dict, Any, List
+
 from repository.document_repo import (
-    insert_document,
-    insert_document_password,
+    create_document,
     update_document_status,
+    link_statement_to_document,
     insert_upload_audit,
-    insert_text_extraction
+    save_extracted_text,
+    insert_statement_transactions,
+    save_document_password
 )
-from db.connection import get_connection
 
-# ---------------------------------------------------
-# HANDLE COMPLETE DOCUMENT LIFECYCLE
-# ---------------------------------------------------
-def create_document_entry(user_id: int,
-                          document_type_id: int,
-                          file_name: str,
-                          file_path: str,
-                          password: str | None):
+from services.review_service import run_review_engine
 
-    is_protected = bool(password)
 
-    # 1️⃣ Insert Document
-    document_id = insert_document(
+# ==========================================================
+# MAIN DOCUMENT PROCESSOR
+# ==========================================================
+
+def process_document(
+    user_id: int,
+    file_path: str,
+    extracted_text: str,
+    statement_id: int,
+    extracted_transactions: List[Dict],
+    password: str = None
+) -> Dict[str, Any]:
+
+    file_name = os.path.basename(file_path)
+
+    # ------------------------------------------------------
+    # 1️⃣ Create Document Entry
+    # ------------------------------------------------------
+    document_id = create_document(
         user_id=user_id,
-        document_type_id=document_type_id,
         file_name=file_name,
         file_path=file_path,
-        is_password_protected=is_protected
+        is_password_protected=bool(password)
     )
 
-    # 2️⃣ Insert Password (Base64 demo encryption)
-    if password:
-        encrypted = base64.b64encode(password.encode()).decode()
-        insert_document_password(document_id, encrypted)
-
-    # 3️⃣ Insert Audit Entry
     insert_upload_audit(document_id, "UPLOADED")
 
-    return document_id
+    try:
+        # ------------------------------------------------------
+        # 2️⃣ Mark Processing
+        # ------------------------------------------------------
+        update_document_status(document_id, "PROCESSING")
+        insert_upload_audit(document_id, "PROCESSING")
 
+        # ------------------------------------------------------
+        # 3️⃣ Save Password (if any)
+        # ------------------------------------------------------
+        if password:
+            # You should encrypt before storing
+            save_document_password(document_id, password)
 
+        # ------------------------------------------------------
+        # 4️⃣ Save Extracted Text
+        # ------------------------------------------------------
+        save_extracted_text(document_id, extracted_text)
 
-# -------------------------------------------
-# Store Extracted Text
-# -------------------------------------------
-def store_extracted_text(document_id: int, extracted_text: str):
+        # ------------------------------------------------------
+        # 5️⃣ Link Statement Format
+        # ------------------------------------------------------
+        link_statement_to_document(document_id, statement_id)
 
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    query = """
-        INSERT INTO document_text_extractions (
+        # ------------------------------------------------------
+        # 6️⃣ Store Extracted Transactions (Staging)
+        # ------------------------------------------------------
+        insert_statement_transactions(
             document_id,
-            extraction_method,
-            extracted_text,
-            extraction_status
+            statement_id,
+            extracted_transactions
         )
-        VALUES (%s, 'PDF_TEXT', %s, 'SUCCESS')
-    """
 
-    cursor.execute(query, (document_id, extracted_text))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-
-# -------------------------------------------
-# Store Password
-# -------------------------------------------
-def store_document_password(document_id: int, password: str):
-
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    query = """
-        INSERT INTO document_password (
-            document_id,
-            encrypted_password
+        # ------------------------------------------------------
+        # 7️⃣ Run Review Engine
+        # ------------------------------------------------------
+        review_result = run_review_engine(
+            statement_id,
+            file_path,
+            extracted_text
         )
-        VALUES (%s, %s)
-    """
 
-    # ⚠ For demo only. Later encrypt properly.
-    cursor.execute(query, (document_id, password))
+        # ------------------------------------------------------
+        # 8️⃣ Mark Completed
+        # ------------------------------------------------------
+        update_document_status(document_id, "COMPLETED")
+        insert_upload_audit(document_id, "COMPLETED")
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        return {
+            "document_id": document_id,
+            "review_result": review_result
+        }
 
+    except Exception as e:
 
-def mark_processing(document_id: int):
-    update_document_status(document_id, "PROCESSING")
-    insert_upload_audit(document_id, "PROCESSING")
+        update_document_status(document_id, "FAILED")
+        insert_upload_audit(document_id, "FAILED", str(e))
 
-
-def mark_completed(document_id: int):
-    update_document_status(document_id, "COMPLETED")
-    insert_upload_audit(document_id, "COMPLETED")
-
-
-def mark_failed(document_id: int, error_message: str):
-    update_document_status(document_id, "FAILED")
-    insert_upload_audit(document_id, "FAILED", error_message)
-
-
-def save_extracted_text(document_id: int, text: str):
-    insert_text_extraction(document_id, text)
+        raise e

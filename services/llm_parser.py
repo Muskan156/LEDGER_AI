@@ -134,6 +134,7 @@ Instructions:
 - Ignore page headers, footers, and summary sections.
 - Do NOT invent transactions.
 - Use only the rows provided.
+- Transaction details/description might be in multi line please cross check you have captured full description
 
 Return STRICT valid JSON only.
 

@@ -2,7 +2,8 @@ import re
 from typing import List, Dict
 from repository.statement_category_repo import (
     get_under_review_formats,
-    activate_statement_category
+    activate_statement_category,
+    get_statement_by_id
 )
 from services.validation_service import (
     extract_json_from_response,
@@ -85,43 +86,105 @@ def execute_db_parser(full_text: str,
 # ---------------------------------------------------------
 # Review Engine
 # ---------------------------------------------------------
+# def run_review_engine(statement_id: int, pdf_path: str, full_text: str):
+
+#     statements = get_under_review_formats()
+#     statements = [s for s in statements if s["statement_id"] == statement_id]
+#     for stmt in statements:
+
+#         statement_id = stmt["statement_id"]
+#         extraction_logic = stmt["extraction_logic"]
+
+#         # Run DB Code
+#         # identifier_json = stmt["statement_identifier"]
+#         code_txns = extract_transactions_using_logic(full_text,extraction_logic)
+
+
+#         #Run LLM Parser
+#         llm_response = parse_with_llm(full_text)
+#         llm_txns = extract_json_from_response(llm_response)
+
+#         #Compare
+#         metrics = validate_transactions(code_txns, llm_txns)
+
+#         if not metrics:
+#             print("No transactions extracted for comparison.")
+#             continue
+
+#         score = metrics["overall_accuracy"]
+
+#         print(f"\nStatement ID {statement_id} Accuracy: {score}%")
+
+#         if score >= 90:
+#             activate_statement_category(statement_id)
+#             print(f"Statement ID{statement_id} VERIFIED and ACTIVATED")
+        
+#         return {
+#             "code_transactions": code_txns,
+#             "llm_transactions": llm_txns,
+#             "metrics": metrics
+#         }
+
+#     return None
 def run_review_engine(statement_id: int, pdf_path: str, full_text: str):
 
-    statements = get_under_review_formats()
-    statements = [s for s in statements if s["statement_id"] == statement_id]
-    for stmt in statements:
+    # ✅ Get statement directly by ID (not only UNDER_REVIEW)
+    stmt = get_statement_by_id(statement_id)
 
-        statement_id = stmt["statement_id"]
-        extraction_logic = stmt["extraction_logic"]
+    if not stmt:
+        print("Statement not found.")
+        return None
 
-        # Run DB Code
-        # identifier_json = stmt["statement_identifier"]
-        code_txns = extract_transactions_using_logic(full_text,extraction_logic)
+    extraction_logic = stmt["extraction_logic"]
+    status = stmt["status"]
 
+    # --------------------------------------------------
+    # 🔵 CASE 1: ACTIVE FORMAT → SKIP LLM
+    # --------------------------------------------------
+    if status == "ACTIVE":
 
-        #Run LLM Parser
-        llm_response = parse_with_llm(full_text)
-        llm_txns = extract_json_from_response(llm_response)
+        print(f"Statement ID {statement_id} is ACTIVE. Skipping LLM.")
 
-        #Compare
-        metrics = validate_transactions(code_txns, llm_txns)
+        code_txns = extract_transactions_using_logic(
+            full_text,
+            extraction_logic
+        )
 
-        if not metrics:
-            print("No transactions extracted for comparison.")
-            continue
-
-        score = metrics["overall_accuracy"]
-
-        print(f"\nStatement ID {statement_id} Accuracy: {score}%")
-
-        if score >= 90:
-            activate_statement_category(statement_id)
-            print(f"Statement ID{statement_id} VERIFIED and ACTIVATED")
-        
         return {
             "code_transactions": code_txns,
-            "llm_transactions": llm_txns,
-            "metrics": metrics
+            "llm_transactions": [],
+            "metrics": {
+                "overall_accuracy": 100
+            }
         }
 
-    return None
+    # --------------------------------------------------
+    # 🟡 CASE 2: UNDER_REVIEW → RUN FULL VALIDATION
+    # --------------------------------------------------
+    code_txns = extract_transactions_using_logic(
+        full_text,
+        extraction_logic
+    )
+
+    llm_response = parse_with_llm(full_text)
+    llm_txns = extract_json_from_response(llm_response)
+
+    metrics = validate_transactions(code_txns, llm_txns)
+
+    if not metrics:
+        print("No transactions extracted for comparison.")
+        return None
+
+    score = metrics["overall_accuracy"]
+
+    print(f"\nStatement ID {statement_id} Accuracy: {score}%")
+
+    if score >= 90:
+        activate_statement_category(statement_id)
+        print(f"Statement ID {statement_id} VERIFIED and ACTIVATED")
+
+    return {
+        "code_transactions": code_txns,
+        "llm_transactions": llm_txns,
+        "metrics": metrics
+    }
