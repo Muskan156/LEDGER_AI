@@ -1,685 +1,402 @@
-# import streamlit as st
-# import tempfile
-# import json
-
-# from services.pdf_service import extract_pages
-# from services.identifier_service import (
-#     generate_identifier_llm,
-#     reduce_text_for_llm,
-#     derive_bank_name_from_ifsc
-# )
-# from services.extraction_service import generate_extraction_logic_llm
-# from services.review_service import run_review_engine
-# from repository.statement_category_repo import insert_statement_category
-# from db.connection import get_connection
-
-
-# # ---------------------------------------------------
-# # Fetch formats by BANK CODE (same as main.py)
-# # ---------------------------------------------------
-# def get_formats_by_bank_code(bank_code: str):
-#     conn = get_connection()
-#     cursor = conn.cursor(dictionary=True)
-
-#     query = """
-#         SELECT *
-#         FROM statement_categories
-#         WHERE statement_type = 'BANK_STATEMENT'
-#         AND ifsc_code = %s
-#     """
-
-#     cursor.execute(query, (bank_code,))
-#     rows = cursor.fetchall()
-
-#     cursor.close()
-#     conn.close()
-
-#     for row in rows:
-#         if isinstance(row["statement_identifier"], str):
-#             row["statement_identifier"] = json.loads(row["statement_identifier"])
-
-#     return rows
-
-
-# # ---------------------------------------------------
-# # UI
-# # ---------------------------------------------------
-# # ==========================================================
-# # AUTH LAYER (ADD AT TOP BEFORE EVERYTHING)
-# # ==========================================================
-
-# import hashlib
-# import uuid
-# import datetime
-# from db.connection import get_connection
-
-# if "user_id" not in st.session_state:
-#     st.session_state.user_id = None
-
-# def hash_password(password: str):
-#     return hashlib.sha256(password.encode()).hexdigest()
-
-# def create_session(user_id):
-#     conn = get_connection()
-#     cursor = conn.cursor()
-
-#     token = str(uuid.uuid4())
-#     expires_at = datetime.datetime.now() + datetime.timedelta(hours=12)
-
-#     cursor.execute("""
-#         INSERT INTO user_sessions (user_id, token, expires_at)
-#         VALUES (%s, %s, %s)
-#     """, (user_id, token, expires_at))
-
-#     conn.commit()
-#     cursor.close()
-#     conn.close()
-
-#     st.session_state.user_id = user_id
-
-# # ---------------- LOGIN SCREEN ----------------
-# if st.session_state.user_id is None:
-
-#     st.title("LedgerAI Login")
-
-#     tab1, tab2 = st.tabs(["Login", "Register"])
-
-#     with tab1:
-#         email = st.text_input("Email")
-#         password = st.text_input("Password", type="password")
-
-#         if st.button("Login"):
-
-#             conn = get_connection()
-#             cursor = conn.cursor(dictionary=True)
-
-#             cursor.execute(
-#                 "SELECT * FROM users WHERE email=%s AND status='ACTIVE'",
-#                 (email,)
-#             )
-#             user = cursor.fetchone()
-
-#             cursor.close()
-#             conn.close()
-
-#             if not user:
-#                 st.error("User not found")
-#             elif user["password_hash"] != hash_password(password):
-#                 st.error("Invalid password")
-#             else:
-#                 create_session(user["user_id"])
-#                 st.success("Login successful")
-#                 st.rerun()
-
-#     with tab2:
-#         new_email = st.text_input("New Email")
-#         new_password = st.text_input("New Password", type="password")
-
-#         if st.button("Register"):
-
-#             conn = get_connection()
-#             cursor = conn.cursor()
-
-#             try:
-#                 cursor.execute("""
-#                     INSERT INTO users (email, password_hash)
-#                     VALUES (%s, %s)
-#                 """, (new_email, hash_password(new_password)))
-
-#                 conn.commit()
-#                 st.success("Registration successful. Please login.")
-
-#             except:
-#                 st.error("User already exists")
-
-#             cursor.close()
-#             conn.close()
-
-#     st.stop()
-
-# st.set_page_config(layout="wide")
-# st.title("LedgerAI - Bank Statement Engine")
-
-# uploaded_file = st.file_uploader("Upload Bank Statement PDF", type=["pdf"])
-
-# if uploaded_file:
-
-#     password = st.text_input("Enter PDF Password (if any)", type="password")
-
-#     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-#         tmp.write(uploaded_file.read())
-#         file_path = tmp.name
-#     # ---------------------------------------------------
-#     # STORE DOCUMENT IN DB
-#     # ---------------------------------------------------
-#     conn = get_connection()
-#     cursor = conn.cursor()
-
-#     cursor.execute("""
-#                    INSERT INTO documents (user_id, file_name, file_path, is_password_protected, status)
-#                    VALUES (%s, %s, %s, %s, 'UPLOADED')
-#                 """, (
-#                     st.session_state.user_id,
-#                     uploaded_file.name,file_path,
-#                     bool(password)
-#     ))
-
-#     document_id = cursor.lastrowid
-
-#     # Store password if exists
-#     if password:
-#         cursor.execute("""
-#         INSERT INTO document_password (document_id, encrypted_password)
-#         VALUES (%s, %s)
-#         """, (document_id, password))   # You can encrypt later
-
-#     # Audit entry
-#     cursor.execute("""
-#     INSERT INTO document_upload_audit (document_id, status)
-#     VALUES (%s, 'UPLOADED')
-#      """, (document_id,))
-
-#     conn.commit()
-#     cursor.close()
-#     conn.close()
-#     if st.button("Run Processing"):
-
-#         # ---------------------------------------------------
-#         # 1️⃣ Extract PDF
-#         # ---------------------------------------------------
-#         st.subheader("Extracting PDF Content")
-#         pages = extract_pages(file_path, password)
-#         full_text = "\n".join(pages)
-#         # ---------------------------------------------------
-#         # STORE EXTRACTED TEXT
-#         # ---------------------------------------------------
-#         conn = get_connection()
-#         cursor = conn.cursor()
-
-#         cursor.execute("""
-#          INSERT INTO document_text_extractions
-#          (document_id, extraction_method, extracted_text, extraction_status)
-#           VALUES (%s, 'PDF_TEXT', %s, 'SUCCESS')
-#          """, (document_id, full_text))
-
-#         # Update document status to PROCESSING
-#         cursor.execute("""
-#           UPDATE documents SET status='PROCESSING'
-#           WHERE document_id=%s
-#           """, (document_id,))
-
-#         # Audit entry
-#         cursor.execute("""
-#           INSERT INTO document_upload_audit (document_id, status)
-#           VALUES (%s, 'PROCESSING')
-#           """, (document_id,))
-
-#         conn.commit()
-#         cursor.close()
-#         conn.close()
-#         st.success("PDF extracted successfully")
-
-#         # ---------------------------------------------------
-#         # 2️⃣ Detect Bank via IFSC
-#         # ---------------------------------------------------
-#         st.subheader("Detecting Bank via IFSC")
-#         bank_name, bank_code = derive_bank_name_from_ifsc(full_text)
-
-#         if not bank_name:
-#             bank_name = bank_code or "UNKNOWN_BANK"
-
-#         if not bank_code:
-#             st.error("IFSC not found.")
-#             st.stop()
-
-#         st.write(f"**Bank Name:** {bank_name}")
-#         st.write(f"**Bank Code:** {bank_code}")
-
-#         # ---------------------------------------------------
-#         # 3️⃣ Check Existing Formats
-#         # ---------------------------------------------------
-#         st.subheader("Checking Existing Formats")
-#         formats = get_formats_by_bank_code(bank_code)
-
-#         if formats:
-
-#             st.warning("⚠ Format already exists for this bank")
-
-#             fmt = formats[0]
-#             statement_id = fmt["statement_id"]
-#             st.write(f"**Format Name:** {fmt['format_name']}")
-#             st.write(f"**Status:** {fmt['status']}")
-#             st.info("Running Review Engine on existing format...")
-
-#             review_result = run_review_engine(
-#                 fmt["statement_id"],
-#                 document_id,
-#                 file_path,
-#                 full_text
-#             )
-#             st.write(review_result)
-#         else:
-
-#             st.info("No format found. Generating new format...")
-
-#             # ---------------------------------------------------
-#             # 4️⃣ Generate Identifier
-#             # ---------------------------------------------------
-#             st.subheader("Generating Identifier")
-#             reduced = reduce_text_for_llm(pages)
-#             identifier_json = generate_identifier_llm(reduced)
-
-#             if bank_name:
-#                 identifier_json["bank_identification"] = {
-#                     "bank_name": {
-#                         "patterns": [bank_name]
-#                     }
-#                 }
-
-#             st.json(identifier_json)
-
-#             # ---------------------------------------------------
-#             # 5️⃣ Generate Extraction Logic
-#             # ---------------------------------------------------
-#             st.subheader("Generating Extraction Logic")
-
-#             headers = [
-#                 line.strip()
-#                 for line in full_text.splitlines()
-#                 if any(k in line.lower() for k in ["date", "debit", "credit", "balance"])
-#             ][:5]
-
-#             footer = [
-#                 line.strip()
-#                 for line in full_text.splitlines()
-#                 if any(k in line.lower() for k in ["summary", "end of statement"])
-#             ][-5:]
-
-#             sample_text = full_text[:5000]
-
-#             extraction_code = generate_extraction_logic_llm(
-#                 identifier_json,
-#                 headers,
-#                 sample_text,
-#                 footer
-#             )
-
-#             with st.expander("View Generated Extraction Code"):
-#                 st.code(extraction_code, language="python")
-
-#             # ---------------------------------------------------
-#             # 6️ Save Format
-#             # ---------------------------------------------------
-#             formatted_bank = bank_name.replace(" ", "_").upper()
-#             format_name = f"{formatted_bank}_V1"
-
-#             statement_id = insert_statement_category(
-#                 statement_type="BANK_STATEMENT",
-#                 format_name=format_name,
-#                 institution_name=bank_name,
-#                 ifsc_code=bank_code,
-#                 identifier_json=identifier_json,
-#                 extraction_logic_json=extraction_code,
-#                 threshold=65.0
-#             )
-
-#             st.success("Format saved successfully")
-#             st.write(f"Statement ID: {statement_id}")
-#             st.write("Status: UNDER_REVIEW")
-
-#             st.info("Running Review Engine...")
-
-#             review_result = run_review_engine(
-#                 statement_id,
-#                 document_id,
-#                 file_path,
-#                 full_text
-#             )
-
-#         # ---------------------------------------------------
-#         # 7️⃣ Show Review Results
-#         # ---------------------------------------------------
-#         if not review_result:
-#             st.error("Review engine did not return data")
-#             st.stop()
-
-#         code_txns = review_result.get("code_transactions", [])
-#         llm_txns = review_result.get("llm_transactions", [])
-#         metrics = review_result.get("metrics", {})
-
-#         st.subheader("Validation Metrics")
-#         st.json(metrics)
-
-#         # ---------------------------------------------------
-#         # 8️⃣ Side-by-Side Comparison
-#         # ---------------------------------------------------
-#         st.subheader("Side-by-Side Transaction Comparison")
-
-#         min_len = min(len(code_txns), len(llm_txns))
-
-#         for i in range(min_len):
-
-#             col1, col2 = st.columns(2)
-
-#             with col1:
-#                 st.markdown(f"### Code Transaction {i+1}")
-#                 st.json(code_txns[i])
-
-#             with col2:
-#                 st.markdown(f"### LLM Transaction {i+1}")
-#                 st.json(llm_txns[i])
-
-#             st.divider()
-
-#         # ---------------------------------------------------
-#         # 🔢 Overall Similarity + Decision Engine
-#         # ---------------------------------------------------
-
-#         overall_similarity = metrics.get("overall_accuracy", 0)
-
-#         st.subheader("Overall Similarity")
-#         st.success(f"Similarity Score: {overall_similarity}%")
-
-#         # ==================================================
-#         # DECISION ENGINE (Aligned with DB Architecture)
-#         # ==================================================
-
-#         # CASE 1: ≥ 90% → Auto Activate
-#         if overall_similarity >= 90:
-#             st.success("ACCEPTED")
-#             st.success("Parser Verified & ACTIVATED")
-
-#             from repository.statement_category_repo import activate_statement_category
-#             activate_statement_category(statement_id)
-#             # ---------------------------------------------------
-#             # STORE STAGING TRANSACTIONS
-#             # ---------------------------------------------------
-#             conn = get_connection()
-#             cursor = conn.cursor()
-
-#             for txn in code_txns:
-#                 cursor.execute("""
-#                     INSERT INTO statement_transactions
-#                     (document_id, statement_id, txn_date,
-#                     debit, credit, balance, description, confidence)
-#                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-#                 """, (document_id,statement_id,txn.get("date"),txn.get("debit"),txn.get("credit"),
-#                      txn.get("balance"),
-#                      txn.get("details"),
-#                      txn.get("confidence")))
-
-#             # Update document status
-#             cursor.execute("""
-#              UPDATE documents SET status='COMPLETED',
-#              statement_id=%s
-#               WHERE document_id=%s
-#              """, (statement_id, document_id))
-
-#             # Audit entry
-#             cursor.execute("""
-#              INSERT INTO document_upload_audit (document_id, status)
-#              VALUES (%s, 'COMPLETED')
-#               """, (document_id,))
-
-#             conn.commit()
-#             cursor.close()
-#             conn.close()
-#        # CASE 2: 75–90% → Human Loop
-#         elif 75 <= overall_similarity < 90:
-
-#           st.warning("PARTIAL MATCH (75–90%)")
-#           st.info("Human Intervention Required")
-
-#           manual_code = st.text_area(
-#              "Edit / Replace Extraction Logic Below:",
-#              height=400,
-#              value=extraction_code,
-#            )
-
-#           if st.button("Validate Human Logic"):
-
-#                if manual_code.strip() == "":
-#                    st.error("Code cannot be empty.")
-#                elif "def extract_transactions" not in manual_code:
-#                    st.error("Code must contain: def extract_transactions(text: str)")
-#                else:
-#                 try:
-#                     from services.extraction_service import extract_transactions_using_logic
-#                     st.info("Running Human Extraction Logic...")
-#                     human_transactions = extract_transactions_using_logic(
-#                     full_text,
-#                     manual_code
-#                     )
-
-#                     # Re-run validation using your production validator
-#                     from services.validation_service import validate_transactions
-
-#                     new_metrics = validate_transactions(
-#                     human_transactions,
-#                     llm_txns
-#                    )
-
-#                     new_score = new_metrics.get("overall_accuracy", 0)
-
-#                     st.success(f"Human Logic Similarity: {new_score}%")
-
-#                     if new_score >= 90:
-#                         from repository.statement_category_repo import update_extraction_logic
-#                         update_extraction_logic(statement_id, manual_code)
-
-#                         from repository.statement_category_repo import activate_statement_category
-#                         activate_statement_category(statement_id)
-
-#                         st.success("HUMAN LOGIC ACCEPTED")
-#                         st.success("Format Activated")
-
-#                     else:
-#                         st.error("HUMAN LOGIC REJECTED (Below 90%)")
-
-#                 except Exception as e:
-#                    st.error(f"Execution Error: {e}")
-
-#         # CASE 3: < 75% → Reject
-#         else:
-#             st.error("REJECTED (Below 75%)")
-
-
-
-
+"""
+app.py
+──────
+LedgerAI — Streamlit Application
+
+Screens:
+  1. LOGIN       — Email + password authentication
+  2. REGISTER    — New user registration
+  3. UPLOAD      — Upload financial document PDF
+  4. PROCESSING  — Live status polling during background processing
+  5. REVIEW      — View extracted transactions + approve
+  6. DASHBOARD   — List of user's documents
+"""
+
+# ── Logging must be configured BEFORE any other imports ──
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(name)-30s  %(levelname)-7s  %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 
 import streamlit as st
 import tempfile
 import json
+import time
+import pandas as pd
 import hashlib
 import uuid
 import datetime
-from services.llm_parser import parse_with_llm
+
 from services.pdf_service import extract_pages
 from services.identifier_service import (
     reduce_text,
     find_existing_identifier,
     classify_document_llm,
-    save_new_statement_format
+    save_new_statement_format,
 )
+from services.extraction_service import (
+    generate_extraction_logic_llm,
+    extract_transactions_using_logic,
+)
+from services.llm_parser import parse_with_llm
+from services.validation_service import validate_transactions, extract_json_from_response
+from services.review_service import get_document_for_review, approve_transactions
+from services.document_service import create_document, get_user_documents
+from services.task_queue import submit_document, get_task_status, TaskStatus
+from repository.document_repo import get_document
+from repository.statement_category_repo import (
+    activate_statement_category,
+    update_extraction_logic,
+    update_success_rate,
+)
+from db.connection import get_cursor
 
-from db.connection import get_connection
+logger = logging.getLogger("ledgerai.app")
 
-
-# ================= AUTH =================
+# ═══════════════════════════════════════════════════════════
+# SESSION STATE DEFAULTS
+# ═══════════════════════════════════════════════════════════
 
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
+if "screen" not in st.session_state:
+    st.session_state.screen = "login"
+if "current_document" not in st.session_state:
+    st.session_state.current_document = None
+
+
+# ═══════════════════════════════════════════════════════════
+# AUTH HELPERS
+# ═══════════════════════════════════════════════════════════
 
 def hash_password(password: str):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def create_session(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    token = str(uuid.uuid4())
-    expires_at = datetime.datetime.now() + datetime.timedelta(hours=12)
-
-    cursor.execute("""
-        INSERT INTO user_sessions (user_id, token, expires_at)
-        VALUES (%s, %s, %s)
-    """, (user_id, token, expires_at))
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
+    with get_cursor(commit=True) as (conn, cursor):
+        token = str(uuid.uuid4())
+        expires_at = datetime.datetime.now() + datetime.timedelta(hours=12)
+        cursor.execute("""
+            INSERT INTO user_sessions (user_id, token, expires_at)
+            VALUES (%s, %s, %s)
+        """, (user_id, token, expires_at))
     st.session_state.user_id = user_id
 
-
-# ================= LOGIN =================
-
-if st.session_state.user_id is None:
-
-    st.title("LedgerAI Login")
-
-    email = st.text_input("Email")
-    password = st.text_input("Password", type="password")
-
-    if st.button("Login"):
-
-        conn = get_connection()
-        cursor = conn.cursor(dictionary=True)
-
+def login_user(email, password):
+    with get_cursor(dictionary=True) as (conn, cursor):
         cursor.execute(
             "SELECT * FROM users WHERE email=%s AND status='ACTIVE'",
             (email,)
         )
-
         user = cursor.fetchone()
-        cursor.close()
-        conn.close()
+    if not user:
+        return None
+    if user["password_hash"] != hash_password(password):
+        return None
+    create_session(user["user_id"])
+    return user["user_id"]
 
-        if not user:
-            st.error("User not found")
-        elif user["password_hash"] != hash_password(password):
-            st.error("Invalid password")
-        else:
-            create_session(user["user_id"])
-            st.success("Login successful")
+
+# ═══════════════════════════════════════════════════════════
+# SCREEN: LOGIN
+# ═══════════════════════════════════════════════════════════
+
+def show_login():
+    st.title("Login")
+
+    tab_login, tab_register = st.tabs(["Login", "Register"])
+
+    with tab_login:
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Password", type="password", key="login_pw")
+
+        if st.button("Login", key="btn_login"):
+            result = login_user(email, password)
+            if result:
+                st.session_state.screen = "dashboard"
+                st.rerun()
+            else:
+                st.error("Invalid email or password.")
+
+    with tab_register:
+        new_email = st.text_input("Email", key="reg_email")
+        new_pw = st.text_input("Password", type="password", key="reg_pw")
+
+        if st.button("Register", key="btn_register"):
+            try:
+                pw_hash = hash_password(new_pw)
+                with get_cursor(commit=True) as (conn, cursor):
+                    cursor.execute(
+                        "INSERT INTO users (email, password_hash) VALUES (%s, %s)",
+                        (new_email, pw_hash),
+                    )
+                    user_id = cursor.lastrowid
+                st.success(f"Registered! User ID: {user_id}. Please login.")
+            except Exception as e:
+                st.error(f"Registration failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════
+# SCREEN: DASHBOARD
+# ═══════════════════════════════════════════════════════════
+
+def show_dashboard():
+    st.title("LedgerAI — Dashboard")
+
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        st.write(f"**User ID:** {st.session_state.user_id}")
+    with col2:
+        if st.button("Upload New Document", key="dash_upload"):
+            st.session_state.screen = "upload"
+            st.rerun()
+    with col3:
+        if st.button("Logout", key="dash_logout"):
+            st.session_state.user_id = None
+            st.session_state.screen = "login"
             st.rerun()
 
-    st.stop()
+    st.divider()
+
+    docs = get_user_documents(st.session_state.user_id)
+
+    if not docs:
+        st.info("No documents uploaded yet. Click 'Upload New Document' to start.")
+        return
+
+    for doc in docs:
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([3, 1, 1])
+            with c1:
+                st.write(f"**{doc['file_name']}**")
+                st.caption(f"Uploaded: {doc['created_at']}")
+            with c2:
+                status = doc["status"]
+                if status in ("POSTED", "APPROVE"):
+                    st.success(status)
+                elif status == "FAILED":
+                    st.error(status)
+                elif status == "AWAITING_REVIEW":
+                    st.warning(status)
+                else:
+                    st.info(status)
+            with c3:
+                if status == "AWAITING_REVIEW":
+                    if st.button("Review", key=f"rev_{doc['document_id']}"):
+                        st.session_state.current_document = doc["document_id"]
+                        st.session_state.screen = "review"
+                        st.rerun()
+                elif status in ("EXTRACTING_TEXT", "IDENTIFYING_FORMAT",
+                                "PARSING_TRANSACTIONS"):
+                    if st.button("Status", key=f"stat_{doc['document_id']}"):
+                        st.session_state.current_document = doc["document_id"]
+                        st.session_state.screen = "processing"
+                        st.rerun()
 
 
-# ================= MAIN =================
+# ═══════════════════════════════════════════════════════════
+# SCREEN: UPLOAD
+# ═══════════════════════════════════════════════════════════
 
-st.title("LedgerAI - Identifier Engine")
+def show_upload():
+    st.title("Upload Financial Statement")
 
-uploaded_file = st.file_uploader("Upload Financial Statement PDF", type=["pdf"])
+    if st.button("← Back to Dashboard", key="upload_back"):
+        st.session_state.screen = "dashboard"
+        st.rerun()
 
-if uploaded_file:
+    uploaded_file = st.file_uploader(
+        "Upload PDF document",
+        type=["pdf"],
+        help="Bank statement, credit card statement, loan statement, etc.",
+    )
+    password = st.text_input("PDF Password (if any)", type="password")
 
-    password = st.text_input("Enter PDF Password (if any)", type="password")
+    if uploaded_file and st.button("Start Processing", type="primary", key="upload_start"):
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(uploaded_file.read())
-        file_path = tmp.name
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-                   INSERT INTO documents (user_id, file_name, file_path, is_password_protected, status)
-                   VALUES (%s, %s, %s, %s, 'UPLOADED')
-                """, (
-                    st.session_state.user_id,
-                    uploaded_file.name,file_path,
-                    bool(password)
-    ))
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(uploaded_file.read())
+            file_path = tmp.name
 
-    document_id = cursor.lastrowid
-    if password:
-        cursor.execute("""
-        INSERT INTO document_password (document_id, encrypted_password)
-        VALUES (%s, %s)
-        """, (document_id, password))
-    cursor.execute("""
-    INSERT INTO document_upload_audit (document_id, status)
-    VALUES (%s, 'UPLOADED')
-     """, (document_id,))
+        # Create document record
+        document_id = create_document(
+            user_id=st.session_state.user_id,
+            file_name=uploaded_file.name,
+            file_path=file_path,
+            is_password_protected=bool(password),
+            password=password if password else None,
+        )
 
-    conn.commit()
-    cursor.close()
-    conn.close() 
-    if st.button("Run Processing"):
-        st.subheader("Extracting PDF Content")
-        pages = extract_pages(file_path, password)
+        # Submit to background queue
+        submit_document(document_id)
 
-        if not pages:
-            st.error("No extractable text found.")
-            st.stop()
+        st.session_state.current_document = document_id
+        st.session_state.screen = "processing"
+        st.rerun()
 
-        full_text = "\n".join(pages)
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-          UPDATE documents SET status='PROCESSING'
-          WHERE document_id=%s
-          """, (document_id,))
-        cursor.execute("""
-          INSERT INTO document_upload_audit (document_id, status)
-          VALUES (%s, 'PROCESSING')
-          """, (document_id,))
 
-        conn.commit()
-        cursor.close()
-        conn.close()
-        reduced = reduce_text(pages)
-        st.success("PDF extracted successfully")
-        st.subheader("Checking Existing Formats")
-        matched, existing_identifier = find_existing_identifier(full_text)
+# ═══════════════════════════════════════════════════════════
+# SCREEN: PROCESSING (live status polling)
+# ═══════════════════════════════════════════════════════════
 
-        if matched:
-            st.success("Existing Identifier Matched")
-            identity_json = existing_identifier
-            st.json(identity_json)
-            # st.subheader("Extracting Transactions via LLM...")
-            # transactions_json = parse_with_llm(full_text, identity_json)
-            # st.success("LLM Transactions Extracted")
-            # if isinstance(transactions_json, str):
-            #     try:
-            #         transactions_json = json.loads(transactions_json)
-            #     except:
-            #         st.error("Failed to parse LLM transactions JSON")
-            #         st.text(transactions_json)
-            #         st.stop()
-            # if isinstance(transactions_json,list):
-            #     st.info(f"Total Transactions Extracted: {len(transactions_json)}")
-            #     st.dataframe(transactions_json,use_container_width=True)
-            # else:
-            #     st.warning("Transactions output is not a list.")
-            #     st.json(transactions_json)
-        else:
+def show_processing():
+    st.title("Processing Document")
 
-            st.warning("No Existing Identifier Found")
-            st.info("Generating New Identifier via LLM...")
+    doc_id = st.session_state.current_document
+    if not doc_id:
+        st.error("No document selected.")
+        return
 
-            identifier_json = classify_document_llm(reduced)
+    if st.button("← Back to Dashboard", key="proc_back"):
+        st.session_state.screen = "dashboard"
+        st.rerun()
 
-            st.success("New Identifier Generated")
-            st.json(identifier_json)
-            save_new_statement_format(
-                format_name=identifier_json["id"],
-                bank_code=None,
-                identifier_json=identifier_json,
-                threshold=65.0
+    status_placeholder = st.empty()
+    progress_bar = st.progress(0)
+
+    status_map = {
+        "UPLOADED": (0.05, "Document uploaded..."),
+        "EXTRACTING_TEXT": (0.20, "Extracting text from PDF..."),
+        "IDENTIFYING_FORMAT": (0.40, "Identifying document format..."),
+        "PARSING_TRANSACTIONS": (0.65, "Parsing transactions (dual pipeline)..."),
+        "AWAITING_REVIEW": (1.00, "Processing complete! Ready for review."),
+        "FAILED": (1.00, "Processing failed."),
+    }
+
+    MAX_POLLS = 120  # 2 minutes max
+    for _ in range(MAX_POLLS):
+        doc = get_document(doc_id)
+        if not doc:
+            st.error("Document not found.")
+            return
+
+        current_status = doc["status"]
+        progress, message = status_map.get(current_status, (0.50, current_status))
+
+        progress_bar.progress(progress)
+        status_placeholder.info(message)
+
+        # Terminal states
+        if current_status == "AWAITING_REVIEW":
+            st.success("Document processed successfully!")
+            if st.button("Review Transactions", type="primary", key="proc_review"):
+                st.session_state.screen = "review"
+                st.rerun()
+            return
+
+        if current_status == "FAILED":
+            st.error("Processing failed. Check logs for details.")
+            if st.button("← Back to Dashboard", key="proc_fail_back"):
+                st.session_state.screen = "dashboard"
+                st.rerun()
+            return
+
+        time.sleep(1)
+
+    st.warning("Processing is taking longer than expected. Check back later.")
+
+
+# ═══════════════════════════════════════════════════════════
+# SCREEN: REVIEW
+# ═══════════════════════════════════════════════════════════
+
+def show_review():
+    st.title("Review Transactions")
+
+    doc_id = st.session_state.current_document
+    if not doc_id:
+        st.error("No document selected.")
+        return
+
+    if st.button("← Back to Dashboard", key="review_back"):
+        st.session_state.screen = "dashboard"
+        st.rerun()
+
+    review_data = get_document_for_review(doc_id)
+    if not review_data:
+        st.error("No review data found.")
+        return
+
+    doc = review_data["document"]
+    code_txns = review_data["code_transactions"]
+    llm_txns = review_data["llm_transactions"]
+    final_parser = review_data["final_parser"]
+
+    # ── Document Info ──
+    with st.container(border=True):
+        c1, c2 = st.columns(2)
+        c1.metric("File", doc["file_name"])
+        c2.metric("Status", doc["status"])
+
+    # ── Winning Transactions ──
+    st.subheader("Extracted Transactions")
+
+    winning_txns = code_txns if final_parser == "CODE" else llm_txns
+    winning_staging_id = (
+        review_data["code_staging_id"] if final_parser == "CODE"
+        else review_data["llm_staging_id"]
+    )
+
+    if winning_txns:
+        df = pd.DataFrame(winning_txns)
+        st.dataframe(df, use_container_width=True)
+        st.info(f"Total: **{len(winning_txns)}** transactions")
+    else:
+        st.warning("No transactions extracted.")
+
+    # ── Side-by-side Comparison (expandable) ──
+    if code_txns and llm_txns:
+        with st.expander("Compare CODE vs LLM Transactions"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**CODE** ({len(code_txns)} txns)")
+                st.dataframe(pd.DataFrame(code_txns), use_container_width=True)
+            with col2:
+                st.write(f"**LLM** ({len(llm_txns)} txns)")
+                st.dataframe(pd.DataFrame(llm_txns), use_container_width=True)
+
+    # ── Approve Button ──
+    st.divider()
+
+    if doc["status"] == "AWAITING_REVIEW" and winning_txns:
+        if st.button("Approve Transactions", type="primary", key="review_approve"):
+            approve_transactions(
+                document_id=doc_id,
+                user_id=st.session_state.user_id,
+                statement_id=doc.get("statement_id"),
+                staging_transaction_id=winning_staging_id,
+                transactions=winning_txns,
             )
-            # st.subheader("Extracting Transactions via LLM...")
-            # transactions_json = parse_with_llm(full_text, identifier_json)
-            # st.success("LLM Transactions Extracted")
-            # if isinstance(transactions_json, str):
-            #     try:
-            #         transactions_json = json.loads(transactions_json)
-            #     except:
-            #         st.error("Failed to parse LLM transactions JSON")
-            #         st.text(transactions_json)
-            #         st.stop()
-            # if isinstance(transactions_json,list):
-            #     st.info(f"Total Transactions Extracted: {len(transactions_json)}")
-            #     st.dataframe(transactions_json,use_container_width=True)
-            # else:
-            #     st.warning("Transactions output is not a list.")
-            #     st.json(transactions_json)
+            st.success("Transactions approved and moved to uncategorized!")
+            st.session_state.screen = "dashboard"
+            time.sleep(1)
+            st.rerun()
+    elif doc["status"] == "APPROVE":
+        st.success("Already approved.")
+
+
+# ═══════════════════════════════════════════════════════════
+# ROUTER
+# ═══════════════════════════════════════════════════════════
+
+st.set_page_config(page_title="LedgerAI", layout="wide")
+
+if st.session_state.user_id is None:
+    show_login()
+else:
+    screen = st.session_state.screen
+    if screen == "dashboard":
+        show_dashboard()
+    elif screen == "upload":
+        show_upload()
+    elif screen == "processing":
+        show_processing()
+    elif screen == "review":
+        show_review()
+    else:
+        show_dashboard()

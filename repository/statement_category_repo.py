@@ -1,259 +1,126 @@
-# from db.connection import get_connection
-# import json
-
-# #=================================Fetch All Active Categories=====================================#
-# def get_active_statement_categories():
-#     conn = get_connection()
-#     cursor = conn.cursor(dictionary=True)
-
-#     query = """
-#         SELECT * FROM statement_categories
-#         WHERE status = 'ACTIVE'
-#     """
-
-#     cursor.execute(query)
-#     rows = cursor.fetchall()
-
-#     cursor.close()
-#     conn.close()
-
-#     for row in rows:
-#         row["statement_identifier"] = json.loads(row["statement_identifier"])
-#         row["extraction_logic"] = json.loads(row["extraction_logic"])
-
-#     return rows
-
-# #==================================Insert New Category (LLM Generated)========================================#
-# def insert_statement_category(
-#     statement_type,
-#     format_name,
-#     institution_name,
-#     identifier_json,
-#     extraction_logic_json,
-#     threshold=65.00
-# ):
-#     conn = get_connection()
-#     cursor = conn.cursor()
-
-#     query = """
-#         INSERT INTO statement_categories
-#         (statement_type, format_name, institution_name,
-#          statement_identifier, extraction_logic,
-#          match_threshold, logic_version, status)
-#         VALUES (%s, %s, %s, %s, %s, %s, 1, 'UNDER_REVIEW')
-#     """
-
-#     cursor.execute(
-#         query,
-#         (
-#             statement_type,
-#             format_name,
-#             institution_name,
-#             json.dumps(identifier_json),
-#             json.dumps(extraction_logic_json),
-#             threshold
-#         )
-#     )
-
-#     conn.commit()
-
-#     inserted_id = cursor.lastrowid
-
-#     cursor.close()
-#     conn.close()
-
-#     return inserted_id
-
-# #==============================Activate Category After Validation====================================#
-# def activate_statement_category(statement_id):
-#     conn = get_connection()
-#     cursor = conn.cursor()
-
-#     query = """
-#         UPDATE statement_categories
-#         SET status = 'ACTIVE'
-#         WHERE statement_id = %s
-#     """
-
-#     cursor.execute(query, (statement_id,))
-#     conn.commit()
-
-#     cursor.close()
-#     conn.close()
+"""
+repository/statement_category_repo.py
+──────────────────────────────────────
+CRUD for statement_categories table.
+Status enums: ACTIVE | UNDER_REVIEW | DISABLED | EXPERIMENTAL
+"""
 
 import json
-from db.connection import get_connection
+import logging
+from db.connection import get_cursor
+
+logger = logging.getLogger("ledgerai.statement_category_repo")
 
 
-def get_formats_by_bank_code(bank_code: str):
+# ── FETCH ────────────────────────────────────────────────
 
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
-    query = """
-        SELECT *
-        FROM statement_categories
-        WHERE statement_type = 'BANK_STATEMENT'
-        AND ifsc_code = %s
-    """
-
-    cursor.execute(query, (bank_code,))
-    rows = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
+def get_all_matchable_formats():
+    """Fetch ACTIVE + UNDER_REVIEW + EXPERIMENTAL formats for matching."""
+    with get_cursor(dictionary=True) as (conn, cursor):
+        cursor.execute("""
+            SELECT * FROM statement_categories
+            WHERE status IN ('ACTIVE','UNDER_REVIEW','EXPERIMENTAL')
+        """)
+        rows = cursor.fetchall()
 
     for row in rows:
-        if isinstance(row["statement_identifier"], str):
+        if isinstance(row.get("statement_identifier"), str):
             row["statement_identifier"] = json.loads(row["statement_identifier"])
-
     return rows
 
-# ================================= Fetch All Active Categories =================================
-def get_active_statement_categories():
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
 
-    query = """
-        SELECT *
-        FROM statement_categories
-        WHERE status = 'ACTIVE'
-    """
-
-    cursor.execute(query)
-    rows = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
+def get_active_formats():
+    with get_cursor(dictionary=True) as (conn, cursor):
+        cursor.execute("SELECT * FROM statement_categories WHERE status='ACTIVE'")
+        rows = cursor.fetchall()
 
     for row in rows:
-        row["statement_identifier"] = json.loads(row["statement_identifier"])
-        row["extraction_logic"] = json.loads(row["extraction_logic"])
-
+        if isinstance(row.get("statement_identifier"), str):
+            row["statement_identifier"] = json.loads(row["statement_identifier"])
     return rows
 
 
-# ================================= Insert New Category =================================
-def insert_statement_category(
-    statement_type,
-    format_name,
-    institution_name,
-    ifsc_code,                 
-    identifier_json,
-    extraction_logic_json,
-    threshold=65.00
-):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    query = """
-        INSERT INTO statement_categories
-        (
-            statement_type,
-            format_name,
-            institution_name,
-            ifsc_code,                      
-            statement_identifier,
-            extraction_logic,
-            match_threshold,
-            logic_version,
-            status
+def get_statement_by_id(statement_id: int):
+    with get_cursor(dictionary=True) as (conn, cursor):
+        cursor.execute(
+            "SELECT * FROM statement_categories WHERE statement_id=%s",
+            (statement_id,),
         )
+        row = cursor.fetchone()
+    if row and isinstance(row.get("statement_identifier"), str):
+        row["statement_identifier"] = json.loads(row["statement_identifier"])
+    return row
+
+
+# ── INSERT ───────────────────────────────────────────────
+
+def insert_statement_category(
+    statement_type: str,
+    format_name: str,
+    institution_name: str,
+    identifier_json: dict,
+    extraction_logic: str,
+    ifsc_code: str = None,
+    threshold: float = 65.0,
+):
+    sql = """
+        INSERT INTO statement_categories
+        (statement_type, format_name, institution_name, ifsc_code,
+         statement_identifier, extraction_logic,
+         match_threshold, logic_version, status)
         VALUES (%s, %s, %s, %s, %s, %s, %s, 1, 'UNDER_REVIEW')
     """
-
-    cursor.execute(
-        query,
-        (
-            statement_type,
-            format_name,
-            institution_name,
-            ifsc_code,                      
-            json.dumps(identifier_json),
-            extraction_logic_json,
-            threshold
-        )
+    params = (
+        statement_type,
+        format_name,
+        institution_name,
+        ifsc_code,
+        json.dumps(identifier_json),
+        extraction_logic,
+        threshold,
     )
-
-    conn.commit()
-
-    inserted_id = cursor.lastrowid
-
-    cursor.close()
-    conn.close()
-
-    return inserted_id
+    
+    with get_cursor(commit=True, prepared=True) as (conn, cursor):
+        # Use prepared statement for safer handling of large code blocks
+        # Some MySQL drivers struggle with %s substitution in multi-line strings
+        cursor.execute(sql, params)
+        return cursor.lastrowid
 
 
-# ============================== Activate Category After Validation ==============================
-def activate_statement_category(statement_id):
-    conn = get_connection()
-    cursor = conn.cursor()
+# ── STATUS ───────────────────────────────────────────────
 
-    query = """
-        UPDATE statement_categories
-        SET status = 'ACTIVE'
-        WHERE statement_id = %s
-    """
-
-    cursor.execute(query, (statement_id,))
-    conn.commit()
-
-    cursor.close()
-    conn.close()
-#============================== Fetch All Under Review Categories ==============================
-def get_under_review_formats():
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
-    query = """
-        SELECT *
-        FROM statement_categories
-        WHERE status = 'UNDER_REVIEW'
-    """
-
-    cursor.execute(query)
-    rows = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
-
-    for row in rows:
-        row["statement_identifier"] = json.loads(row["statement_identifier"])
-        row["extraction_logic"] = json.loads(row["extraction_logic"])
-
-    return rows
+def activate_statement_category(statement_id: int):
+    with get_cursor(commit=True) as (conn, cursor):
+        cursor.execute("""
+            UPDATE statement_categories
+            SET status='ACTIVE', last_verified_at=NOW()
+            WHERE statement_id=%s
+        """, (statement_id,))
+    logger.info("Statement %s → ACTIVE.", statement_id)
 
 
-def get_statement_by_id(statement_id):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
-    query = """
-        SELECT * FROM statement_categories
-        WHERE statement_id = %s
-    """
-
-    cursor.execute(query, (statement_id,))
-    result = cursor.fetchone()
-
-    cursor.close()
-    conn.close()
-
-    return result
+def update_statement_status(statement_id: int, status: str):
+    with get_cursor(commit=True) as (conn, cursor):
+        cursor.execute(
+            "UPDATE statement_categories SET status=%s WHERE statement_id=%s",
+            (status, statement_id),
+        )
 
 
-def update_extraction_logic(statement_id, new_logic):
-    conn = get_connection()
-    cursor = conn.cursor()
+def update_extraction_logic(statement_id: int, new_logic: str):
+    with get_cursor(commit=True, prepared=True) as (conn, cursor):
+        cursor.execute("""
+            UPDATE statement_categories
+            SET extraction_logic=%s,
+                logic_version = logic_version + 1
+            WHERE statement_id=%s
+        """, (new_logic, statement_id))
 
-    query = """
-        UPDATE statement_categories
-        SET extraction_logic = %s
-        WHERE statement_id = %s
-    """
 
-    cursor.execute(query, (new_logic, statement_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
+def update_success_rate(statement_id: int, rate: float):
+    with get_cursor(commit=True) as (conn, cursor):
+        cursor.execute("""
+            UPDATE statement_categories
+            SET success_rate=%s, last_verified_at=NOW()
+            WHERE statement_id=%s
+        """, (rate, statement_id))

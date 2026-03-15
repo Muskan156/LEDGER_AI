@@ -1,151 +1,88 @@
-import re
-from typing import List, Dict
-from repository.statement_category_repo import (
-    get_under_review_formats,
-    activate_statement_category,
-    get_statement_by_id
+"""
+services/review_service.py
+──────────────────────────
+Handles the human review screen data layer.
+The review engine logic is in processing_engine.py now.
+"""
+
+import json
+import logging
+from db.connection import get_cursor
+from repository.document_repo import (
+    get_review_transactions,
+    insert_uncategorized_transactions,
+    update_document_status,
+    insert_audit,
 )
-from services.validation_service import (
-    extract_json_from_response,
-    validate_transactions
-)
-from services.llm_parser import parse_with_llm
-from services.extraction_service import extract_transactions_using_logic
 
-def execute_db_parser(full_text: str,
-                      extraction_code: str) -> List[Dict]:
+logger = logging.getLogger("ledgerai.review_service")
+
+
+def get_document_for_review(document_id: int) -> dict:
     """
-    Executes stored extraction logic.
-    Universal parser does NOT require identifier injection.
+    Fetch all data needed for the review screen.
+    Returns dict with document info + transactions.
     """
+    with get_cursor(dictionary=True) as (conn, cursor):
+        # Get document
+        cursor.execute("SELECT * FROM documents WHERE document_id=%s", (document_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return None
 
-    cleaned_code = extraction_code.strip()
+        # Get both CODE and LLM staging rows
+        cursor.execute("""
+            SELECT staging_transaction_id, parser_type,
+                   transaction_json, overall_confidence
+            FROM ai_transactions_staging
+            WHERE document_id=%s
+            ORDER BY parser_type
+        """, (document_id,))
+        staging_rows = cursor.fetchall()
 
-    if "```" in cleaned_code:
-        parts = cleaned_code.split("```")
-        cleaned_code = parts[1] if len(parts) > 1 else parts[0]
+    # Parse JSON
+    code_txns = []
+    llm_txns = []
+    code_staging_id = None
+    llm_staging_id = None
 
-    cleaned_code = cleaned_code.strip()
+    for row in staging_rows:
+        txn_data = row["transaction_json"]
+        if isinstance(txn_data, str):
+            txn_data = json.loads(txn_data)
 
-    if cleaned_code.lower().startswith("python"):
-        cleaned_code = cleaned_code[6:].strip()
-
-    namespace = {
-        "re": re,
-        "List": List,
-        "Dict": Dict,
-    }
-
-    exec(cleaned_code, namespace)
-
-    if "extract_transactions" not in namespace:
-        raise ValueError("extract_transactions not found in DB logic.")
-
-    return namespace["extract_transactions"](full_text)
-
-
-# ---------------------------------------------------------
-# Review Engine
-# ---------------------------------------------------------
-# def run_review_engine(statement_id: int, pdf_path: str, full_text: str):
-
-#     statements = get_under_review_formats()
-#     statements = [s for s in statements if s["statement_id"] == statement_id]
-#     for stmt in statements:
-
-#         statement_id = stmt["statement_id"]
-#         extraction_logic = stmt["extraction_logic"]
-
-#         # Run DB Code
-#         # identifier_json = stmt["statement_identifier"]
-#         code_txns = extract_transactions_using_logic(full_text,extraction_logic)
-
-
-#         #Run LLM Parser
-#         llm_response = parse_with_llm(full_text)
-#         llm_txns = extract_json_from_response(llm_response)
-
-#         #Compare
-#         metrics = validate_transactions(code_txns, llm_txns)
-
-#         if not metrics:
-#             print("No transactions extracted for comparison.")
-#             continue
-
-#         score = metrics["overall_accuracy"]
-
-#         print(f"\nStatement ID {statement_id} Accuracy: {score}%")
-
-#         if score >= 90:
-#             activate_statement_category(statement_id)
-#             print(f"Statement ID{statement_id} VERIFIED and ACTIVATED")
-        
-#         return {
-#             "code_transactions": code_txns,
-#             "llm_transactions": llm_txns,
-#             "metrics": metrics
-#         }
-
-#     return None
-def run_review_engine(statement_id: int, document_id,pdf_path: str, full_text: str):
-
-    # ✅ Get statement directly by ID (not only UNDER_REVIEW)
-    stmt = get_statement_by_id(statement_id)
-
-    if not stmt:
-        print("Statement not found.")
-        return None
-
-    extraction_logic = stmt["extraction_logic"]
-    status = stmt["status"]
-
-    # --------------------------------------------------
-    # 🔵 CASE 1: ACTIVE FORMAT → SKIP LLM
-    # --------------------------------------------------
-    if status == "ACTIVE":
-
-        print(f"Statement ID {statement_id} is ACTIVE. Skipping LLM.")
-
-        code_txns = extract_transactions_using_logic(
-            full_text,
-            extraction_logic
-        )
-
-        return {
-            "code_transactions": code_txns,
-            "llm_transactions": [],
-            "metrics": {
-                "overall_accuracy": 100
-            }
-        }
-
-    # --------------------------------------------------
-    # 🟡 CASE 2: UNDER_REVIEW → RUN FULL VALIDATION
-    # --------------------------------------------------
-    code_txns = extract_transactions_using_logic(
-        full_text,
-        extraction_logic
-    )
-
-    llm_response = parse_with_llm(document_id)
-    llm_txns = extract_json_from_response(llm_response)
-
-    metrics = validate_transactions(code_txns, llm_txns)
-
-    if not metrics:
-        print("No transactions extracted for comparison.")
-        return None
-
-    score = metrics["overall_accuracy"]
-
-    print(f"\nStatement ID {statement_id} Accuracy: {score}%")
-
-    if score >= 90:
-        activate_statement_category(statement_id)
-        print(f"Statement ID {statement_id} VERIFIED and ACTIVATED")
+        if row["parser_type"] == "CODE":
+            code_txns = txn_data
+            code_staging_id = row["staging_transaction_id"]
+        elif row["parser_type"] == "LLM":
+            llm_txns = txn_data
+            llm_staging_id = row["staging_transaction_id"]
 
     return {
+        "document": doc,
         "code_transactions": code_txns,
         "llm_transactions": llm_txns,
-        "metrics": metrics
+        "code_staging_id": code_staging_id,
+        "llm_staging_id": llm_staging_id,
+        "final_parser": doc.get("transaction_parsed_type"),
     }
+
+
+def approve_transactions(
+    document_id: int,
+    user_id: int,
+    statement_id: int,
+    staging_transaction_id: int,
+    transactions: list,
+):
+    """Move approved transactions to uncategorized_transactions."""
+    insert_uncategorized_transactions(
+        document_id=document_id,
+        user_id=user_id,
+        statement_id=statement_id,
+        staging_transaction_id=staging_transaction_id,
+        transactions=transactions,
+    )
+    insert_audit(document_id, "APPROVE")
+    logger.info("Approved %d transactions for document_id=%s.",
+                len(transactions), document_id)

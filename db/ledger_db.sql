@@ -1,22 +1,56 @@
 #=====================================DATABASE=================================================
-CREATE DATABASE ledgerAI_db;
-USE ledgerAI_db;
+CREATE DATABASE ledger_db;
+USE ledger_db;
+CREATE TABLE professions (
+    profession_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    profession_name VARCHAR(100) NOT NULL UNIQUE,
+    is_business BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-#=====================================MASTER TABLES=============================================
-#======================================1. USER TABLE============================================
-/* Purpose: Registered system users */
-CREATE TABLE users(
+CREATE TABLE users (
     user_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    profession_id BIGINT NULL,
     email VARCHAR(150) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     status ENUM('ACTIVE','INACTIVE','SUSPENDED') NOT NULL DEFAULT 'ACTIVE',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP NULL
+    deleted_at TIMESTAMP NULL,
+    FOREIGN KEY (profession_id) REFERENCES professions(profession_id)
 );
-
-#======================================2. USER SESSION TABLE============================================
-/* Purpose: Active login sessions */
+INSERT INTO users (email,password_hash) VALUES('muskanshaikh5857@gmail.com','Pass@156');
+CREATE TABLE account_groups (
+    account_group_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    group_name VARCHAR(100) NOT NULL,
+    parent_group_id BIGINT NULL,
+    balance_nature ENUM('DEBIT','CREDIT') NOT NULL,
+    is_profit_loss BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by BIGINT NOT NULL,
+    updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
+    updated_by BIGINT NULL,
+    FOREIGN KEY (parent_group_id) REFERENCES account_groups(account_group_id)
+);
+select * from account_groups;
+INSERT INTO account_groups (
+    group_name,
+    parent_group_id,
+    balance_nature,
+    is_profit_loss,
+    is_active,
+    created_by
+)
+VALUES (
+    'Bank Accounts',
+    NULL,
+    'DEBIT',
+    FALSE,
+    TRUE,
+    3
+);
 CREATE TABLE user_sessions(
     session_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -24,125 +58,159 @@ CREATE TABLE user_sessions(
     expires_at TIMESTAMP NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
-
-#======================================3. USER ACCOUNT GROUP TABLE============================================
-/* Purpose: store accounts group */
-CREATE TABLE account_groups(
-    account_group_id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    group_name VARCHAR(100) NOT NULL,
-    parent_group_id BIGINT NULL,
-    balance_nature ENUM('DR', 'CR') NOT NULL,
-    is_profit_loss BOOLEAN NOT NULL DEFAULT FALSE,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_by BIGINT NOT NULL,
-    updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
-    updated_by BIGINT NULL,
-    FOREIGN KEY (parent_group_id) REFERENCES account_groups(account_group_id) -- self referencing
-);
-
-#======================================4. USER ACCOUNT TABLE============================================
-/* Purpose: Personal financial accounts */
-CREATE TABLE accounts(
+CREATE TABLE accounts (
     account_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    account_group_id BIGINT NOT NULL,
     user_id BIGINT NOT NULL,
-    account_number VARCHAR(30) UNIQUE,
-	account_name VARCHAR(150) NOT NULL,
-    opening_balance DECIMAL(18,2) NOT NULL DEFAULT 0.00,
-    opening_balance_date DATE NOT NULL,
+    account_group_id BIGINT NOT NULL,
+    account_name VARCHAR(150) NOT NULL,
+    balance_nature ENUM('DEBIT','CREDIT') NOT NULL,
+    is_profit_loss BOOLEAN NOT NULL DEFAULT FALSE,
+    is_system_generated BOOLEAN NOT NULL DEFAULT TRUE,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_by BIGINT NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    updated_by BIGINT,
-    FOREIGN KEY (account_group_id) REFERENCES account_groups(account_group_id),
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
+    FOREIGN KEY (user_id) REFERENCES users(user_id),
+    FOREIGN KEY (account_group_id) REFERENCES account_groups(account_group_id)
+);
+INSERT INTO accounts (
+    user_id,
+    account_group_id,
+    account_name,
+    balance_nature,
+    is_profit_loss,
+    is_system_generated,
+    is_active
+)
+VALUES (
+    3,
+    1,   
+    'SBI Savings Account - 9589',
+    'DEBIT',
+    FALSE,
+    FALSE,
+    TRUE
+);
+CREATE TABLE profession_account_templates (
+    template_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    profession_id BIGINT NOT NULL,
+    account_name VARCHAR(150) NOT NULL,
+    account_group_id BIGINT NOT NULL,
+    balance_nature ENUM('DEBIT','CREDIT') NOT NULL,
+    is_profit_loss BOOLEAN NOT NULL DEFAULT FALSE,
+    is_default BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (profession_id) REFERENCES professions(profession_id),
+    FOREIGN KEY (account_group_id) REFERENCES account_groups(account_group_id)
 );
 
-#======================================4. MERCHANTS TABLE============================================
-/* Purpose: Normalized merchant master */
-CREATE TABLE merchants(
-    merchant_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    merchant_name VARCHAR(150) NOT NULL UNIQUE,
-    normalization_pattern VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE profession_category_templates (
+    template_category_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    profession_id BIGINT NOT NULL,
+    category_name VARCHAR(150) NOT NULL,
+    linked_account_template_id BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (profession_id) REFERENCES professions(profession_id),
+    FOREIGN KEY (linked_account_template_id) REFERENCES profession_account_templates(template_id)
 );
 
-#======================================5. CATEGORIES TABLE============================================
-/* Purpose: Income & expense categories */
-CREATE TABLE categories(
-    category_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    category_name VARCHAR(100) NOT NULL UNIQUE,
-    category_type ENUM('INCOME','EXPENSE') NOT NULL, 
-    is_active BOOLEAN NOT NULL DEFAULT TRUE
-);
-
-#=====================================DOCUMENT TABLES=============================================
-#=====================================1. DOCUMENT TYPE=============================================
-/* Purpose: Uploaded documents type */
-CREATE TABLE document_types(
-    document_type_id INT AUTO_INCREMENT PRIMARY KEY,
-    type_code VARCHAR(50) NOT NULL UNIQUE
-);
-INSERT INTO document_types (type_code)
-VALUES ('BANK_STATEMENT');
-
-#=====================================2. DOCUMENT TABLE=============================================
-/* Purpose: Uploaded PDF documents */
-CREATE TABLE documents(
+CREATE TABLE documents (
     document_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
-    document_type_id INT NOT NULL,
+    statement_id BIGINT NULL,
     file_name VARCHAR(255) NOT NULL,
     file_path VARCHAR(500) NOT NULL,
     is_password_protected BOOLEAN NOT NULL DEFAULT FALSE,
-    status ENUM('UPLOADED','PROCESSING','FAILED','COMPLETED') NOT NULL DEFAULT 'UPLOADED',
+    transaction_parsed_type ENUM('CODE','LLM') NULL,
+    parser_version VARCHAR(50) NULL,
+    status ENUM('UPLOADED','PASSWORD_REQUIRED','EXTRACTING_TEXT','IDENTIFYING_FORMAT',
+	'PARSING_TRANSACTIONS','AWAITING_REVIEW','CATEGORIZING','POSTED','FAILED') NOT NULL DEFAULT 'UPLOADED',
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    processing_started_at TIMESTAMP NULL,
+    processing_completed_at TIMESTAMP NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-    FOREIGN KEY (document_type_id) REFERENCES document_types(document_type_id)
+    FOREIGN KEY (statement_id) REFERENCES statement_categories(statement_id) ON DELETE SET NULL
 );
+ALTER TABLE documents 
+ADD account_id BIGINT NULL,
+ADD account_match_confidence DECIMAL(5,2) NULL,
+ADD FOREIGN KEY (account_id) REFERENCES accounts(account_id);
+ALTER TABLE documents
+MODIFY COLUMN status ENUM(
+    'UPLOADED',
+    'PASSWORD_REQUIRED',
+    'EXTRACTING_TEXT',
+    'IDENTIFYING_FORMAT',
+    'PARSING_TRANSACTIONS',
+    'AWAITING_REVIEW',
+    'CATEGORIZING',
+    'POSTED',
+    'APPROVE',
+    'FAILED'
+) NOT NULL DEFAULT 'UPLOADED';
 
-#=====================================3. BANK STATEMENT DETAILS TABLE=============================================
-/* Purpose: Bank-specific metadata */
-#=====================================STATEMENT UPLOAD FORMAT TABLE=============================================
-CREATE TABLE statement_categories (
-    statement_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    statement_type ENUM('BANK_STATEMENT','CREDIT_CARD','OTHER') NOT NULL,
-    format_name VARCHAR(150) NOT NULL,
-    institution_name VARCHAR(100) NOT NULL,   
-    ifsc_code VARCHAR(20) NULL,               
-    statement_identifier JSON NOT NULL,       
-    extraction_logic LONGTEXT NOT NULL,       
-    match_threshold DECIMAL(5,2) DEFAULT 65.00,
-    logic_version INT DEFAULT 1,
-    status ENUM('ACTIVE','UNDER_REVIEW','DISABLED') DEFAULT 'UNDER_REVIEW',
+CREATE TABLE account_identifiers (
+    identifier_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    account_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    institution_name VARCHAR(150),
+    account_number_masked VARCHAR(30),
+    account_number_last4 VARCHAR(4),
+    ifsc_code VARCHAR(20),
+    card_last4 VARCHAR(4),
+    loan_account_no VARCHAR(50),
+    wallet_id VARCHAR(50),
+    confidence_score DECIMAL(5,2) DEFAULT 100.00,
+    is_primary BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
-        ON UPDATE CURRENT_TIMESTAMP,
-    CONSTRAINT unique_format UNIQUE(statement_type, ifsc_code)
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+ INSERT INTO account_identifiers (
+    account_id,
+    user_id,
+    institution_name,
+    account_number_masked,
+    account_number_last4,
+    ifsc_code,
+    confidence_score,
+    is_primary,
+    is_active
+)
+VALUES (
+    1,                         -- Replace with real account_id
+    3,
+    'State Bank of India',
+    'XXXXXX9589',
+    '9589',
+    'SBIN0008234',
+    100.00,
+    TRUE,
+    TRUE
+);
+CREATE TABLE document_account_match_log (
+    match_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    document_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    detected_institution VARCHAR(150),
+    detected_account_last4 VARCHAR(4),
+    matched_account_id BIGINT NULL,
+    confidence_score DECIMAL(5,2),
+    match_status ENUM('AUTO_ASSIGNED','USER_CONFIRMED','MANUAL_SELECTED','FAILED'),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(document_id),
+    FOREIGN KEY (matched_account_id) REFERENCES accounts(account_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
-CREATE TABLE bank_statement_details(
-    statement_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    document_id BIGINT NOT NULL UNIQUE,
-    bank_name VARCHAR(100) NOT NULL,
-    statement_start_date DATE NOT NULL,
-    statement_end_date DATE NOT NULL,
-    CHECK (statement_end_date >= statement_start_date),
+
+CREATE TABLE document_password (
+    document_id BIGINT PRIMARY KEY,
+    encrypted_password VARCHAR(255) NOT NULL,
     FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
 );
 
-#=====================================4. ENCRYPTED DOC PASSWORD TABLE=============================================
-/* Purpose: Store encrypted doc password */
-CREATE TABLE document_password(
-	document_id BIGINT PRIMARY KEY,
-    encrypted_password VARCHAR(255),
-    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
-);
-
-#=====================================5. DOCUMENT UPLOAD AUDIT TABLE=============================================
-/* Purpose: Store Upload Lifecycle entry*/
 CREATE TABLE document_upload_audit(
     audit_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     document_id BIGINT NOT NULL,
@@ -152,9 +220,7 @@ CREATE TABLE document_upload_audit(
     FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
 );
 
-#=====================================6. DOCUMENT TEXT EXTRACTION TABLE=============================================
-/* Purpose: Store Raw extracted text*/
-CREATE TABLE document_text_extractions(
+CREATE TABLE document_text_extractions (
     text_extraction_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     document_id BIGINT NOT NULL,
     extraction_method ENUM('PDF_TEXT','OCR','HYBRID') NOT NULL DEFAULT 'PDF_TEXT',
@@ -165,92 +231,150 @@ CREATE TABLE document_text_extractions(
     FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
 );
 
-#=====================================AI PIPELINE & REVIEW TABLES=============================================
-#=====================================1. AI EXTRACTION TABLE=============================================
-/* Purpose: AI execution tracking*/
-CREATE TABLE ai_extraction_jobs(
-    ai_job_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    document_id BIGINT NOT NULL,
-    text_extraction_id BIGINT NOT NULL,
-    model_version_id INT NOT NULL,
-    user_id BIGINT NOT NULL,
-    job_status ENUM('PENDING','RUNNING','FAILED','COMPLETED') NOT NULL DEFAULT 'PENDING',
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMP,
-    error_message VARCHAR(500),
-    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(user_id),
-    FOREIGN KEY (text_extraction_id) REFERENCES document_text_extractions(text_extraction_id) ON DELETE CASCADE
+CREATE TABLE statement_categories (
+    statement_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    statement_type VARCHAR(50) NOT NULL,
+    format_name VARCHAR(150) NOT NULL,
+    institution_name VARCHAR(100) NOT NULL,
+    ifsc_code VARCHAR(20) NULL,
+    statement_identifier JSON NOT NULL,
+    extraction_logic LONGTEXT NOT NULL,
+    match_threshold DECIMAL(5,2) NOT NULL DEFAULT 65.00,
+    logic_version INT NOT NULL DEFAULT 1,
+    status ENUM('ACTIVE','UNDER_REVIEW','DISABLED','EXPERIMENTAL') NOT NULL DEFAULT 'UNDER_REVIEW',
+    success_rate DECIMAL(5,2) NULL,
+    last_verified_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-#=====================================2. AI TRANSCATION STAGING TABLE=============================================
-/* Purpose: Immutable AI-extracted transactions*/
-CREATE TABLE ai_transactions_staging(
+CREATE TABLE ai_transactions_staging (
     staging_transaction_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    ai_job_id BIGINT NOT NULL,
     document_id BIGINT NOT NULL,
     user_id BIGINT NOT NULL,
     transaction_json JSON NOT NULL,
+    parser_type ENUM('LLM','CODE') NOT NULL,
     overall_confidence DECIMAL(5,2) NOT NULL,
-    review_status ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING',
+    review_status ENUM('PENDING','PARTIALLY_APPROVED','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id),
-    FOREIGN KEY (ai_job_id) REFERENCES ai_extraction_jobs(ai_job_id) ON DELETE CASCADE,
     FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
 );
-
-#=====================================3. AI TRANSCATION REVIEWS TABLE=============================================
-/* Purpose: Human review decisions*/
-CREATE TABLE transaction_reviews(
-   review_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-   staging_transaction_id BIGINT NOT NULL,
-   reviewer_user_id	BIGINT NOT NULL,
-   review_status ENUM('APPROVED','REJECTED','NEEDS_CLARIFICATION') NOT NULL,
-   review_notes	VARCHAR(500),
-   reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-   FOREIGN KEY (staging_transaction_id) REFERENCES ai_transactions_staging(staging_transaction_id) ON DELETE CASCADE,
-   FOREIGN KEY (reviewer_user_id) REFERENCES users(user_id) ON DELETE CASCADE
+ALTER TABLE ai_transactions_staging
+DROP COLUMN review_status;
+CREATE TABLE transaction_reviews (
+    review_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    staging_transaction_id BIGINT NOT NULL,
+    reviewer_user_id BIGINT NOT NULL,
+    review_status ENUM('APPROVED','REJECTED','NEEDS_CLARIFICATION') NOT NULL,
+    review_notes VARCHAR(500),
+    reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (staging_transaction_id) REFERENCES ai_transactions_staging(staging_transaction_id) ON DELETE CASCADE,
+    FOREIGN KEY (reviewer_user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
-#=====================================4. AI TRANSCATION REVIEWS OVERRIDE TABLE=============================================
-/* Purpose: AI vs Human review changes*/
-CREATE TABLE transaction_overrides(
-   override_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-   staging_transaction_id BIGINT NOT NULL,
-   field_name VARCHAR(50) NOT NULL,
-   ai_value	VARCHAR(255),
-   user_value VARCHAR(255) NOT NULL,
-   overridden_by BIGINT NOT NULL,
-   overridden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-   FOREIGN KEY (staging_transaction_id) REFERENCES ai_transactions_staging(staging_transaction_id) ON DELETE CASCADE,
-   FOREIGN KEY (overridden_by) REFERENCES users(user_id) ON DELETE CASCADE
+CREATE TABLE transaction_overrides (
+    override_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    staging_transaction_id BIGINT NOT NULL,
+    field_name VARCHAR(50) NOT NULL,
+    ai_value VARCHAR(255),
+    user_value VARCHAR(255) NOT NULL,
+    overridden_by BIGINT NOT NULL,
+    overridden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (staging_transaction_id) REFERENCES ai_transactions_staging(staging_transaction_id) ON DELETE CASCADE,
+    FOREIGN KEY (overridden_by) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
-#=====================================5. TRANSCATION TABLE=============================================
-/* Purpose: Final accounting ledger*/
-CREATE TABLE transactions(
+CREATE TABLE uncategorized_transactions (
+    uncategorized_transaction_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    document_id BIGINT NOT NULL,
+    statement_id BIGINT NOT NULL,
+    staging_transaction_id BIGINT NOT NULL,
+    txn_date VARCHAR(50),
+    debit DECIMAL(18,2),
+    credit DECIMAL(18,2),
+    balance DECIMAL(18,2),
+    description VARCHAR(500),
+    confidence DECIMAL(4,2),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(document_id),
+    FOREIGN KEY (statement_id) REFERENCES statement_categories(statement_id),
+	FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (staging_transaction_id) REFERENCES ai_transactions_staging(staging_transaction_id) ON DELETE CASCADE
+);
+
+CREATE TABLE entities (
+    entity_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    entity_name VARCHAR(255) NOT NULL,
+    entity_type ENUM('MERCHANT','EMPLOYER','BANK','WALLET','TRANSFER','OTHER') NOT NULL DEFAULT 'MERCHANT',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, entity_name),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE entity_aliases (
+    alias_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    entity_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    alias_text VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, alias_text),
+    FOREIGN KEY (entity_id) REFERENCES entities(entity_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE categories (
+    category_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    category_name VARCHAR(100) NOT NULL,
+    category_type ENUM('INCOME','EXPENSE','TRANSFER') NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+
+CREATE TABLE transactions (
     transaction_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
     account_id BIGINT NOT NULL,
+    document_id BIGINT NOT NULL,
     transaction_date DATE NOT NULL,
+    description VARCHAR(500),
     amount DECIMAL(18,2) NOT NULL,
     transaction_type ENUM('DEBIT','CREDIT') NOT NULL,
-    merchant_id BIGINT,
-    category_id BIGINT,
-    description VARCHAR(500),
-    source_staging_id BIGINT,
+    entity_id BIGINT NULL,
+    category_id BIGINT NULL,
+    categorised_by ENUM('DB','LLM','ML') NOT NULL,
+    confidence_score DECIMAL(5,2) NOT NULL,
+    posting_status ENUM('DRAFT','POSTED','REVERSED') DEFAULT 'DRAFT',
+    attention_level ENUM('LOW','MEDIUM','HIGH') NOT NULL DEFAULT 'LOW',
+    review_status ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING',
+    source_staging_id BIGINT NULL,
     is_manual_override BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id),
     FOREIGN KEY (account_id) REFERENCES accounts(account_id),
-    FOREIGN KEY (merchant_id) REFERENCES merchants(merchant_id),
+    FOREIGN KEY (entity_id) REFERENCES entities(entity_id),
     FOREIGN KEY (category_id) REFERENCES categories(category_id),
+    FOREIGN KEY (document_id) REFERENCES documents(document_id),
     FOREIGN KEY (source_staging_id) REFERENCES ai_transactions_staging(staging_transaction_id)
 );
 
+CREATE TABLE ledger_entries (
+    ledger_entry_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    transaction_id BIGINT NOT NULL,
+    account_id BIGINT NOT NULL,
+    debit_amount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+    credit_amount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+    entry_date DATE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (transaction_id) REFERENCES transactions(transaction_id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id)
+);
+
 #=====================================NET WORTH TABLES=============================================
-#======================================1. ASSETS TABLE============================================
-/* Purpose: Store user assets */
 CREATE TABLE assets(
     asset_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -282,7 +406,7 @@ CREATE TABLE ai_chat_sessions(
 );
 
 #=====================================2. AI CHAT MSG TABLE=============================================
-/* Purpose: store AI chat messages*/
+
 CREATE TABLE ai_chat_messages(
     message_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     session_id BIGINT NOT NULL,
@@ -292,8 +416,7 @@ CREATE TABLE ai_chat_messages(
     FOREIGN KEY (session_id) REFERENCES ai_chat_sessions(session_id) ON DELETE CASCADE
 );
 
-#=====================================3. AI MONTHLY SUMMARY TABLE=============================================
-/* Purpose: store AI monthly summaries*/
+
 CREATE TABLE ai_monthly_summaries(
     summary_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -302,4 +425,3 @@ CREATE TABLE ai_monthly_summaries(
     generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
-

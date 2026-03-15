@@ -1,104 +1,59 @@
-# document_service.py
+"""
+services/document_service.py
+────────────────────────────
+Thin service layer used by the Streamlit app for document-related UI operations.
+Processing pipeline is in processing_engine.py.
+"""
 
 import os
-from typing import Dict, Any, List
+import logging
+from db.connection import get_cursor
 
-from repository.document_repo import (
-    create_document,
-    update_document_status,
-    link_statement_to_document,
-    insert_upload_audit,
-    save_extracted_text,
-    insert_statement_transactions,
-    save_document_password
-)
-
-from services.review_service import run_review_engine
+logger = logging.getLogger("ledgerai.document_service")
 
 
-# ==========================================================
-# MAIN DOCUMENT PROCESSOR
-# ==========================================================
-
-def process_document(
+def create_document(
     user_id: int,
+    file_name: str,
     file_path: str,
-    extracted_text: str,
-    statement_id: int,
-    extracted_transactions: List[Dict],
-    password: str = None
-) -> Dict[str, Any]:
+    is_password_protected: bool,
+    password: str = None,
+) -> int:
+    """Insert document + password + audit in a single transaction."""
+    with get_cursor(commit=True) as (conn, cursor):
+        cursor.execute("""
+            INSERT INTO documents
+            (user_id, file_name, file_path, is_password_protected, status)
+            VALUES (%s, %s, %s, %s, 'UPLOADED')
+        """, (user_id, file_name, file_path, is_password_protected))
 
-    file_name = os.path.basename(file_path)
+        document_id = cursor.lastrowid
 
-    # ------------------------------------------------------
-    # 1️⃣ Create Document Entry
-    # ------------------------------------------------------
-    document_id = create_document(
-        user_id=user_id,
-        file_name=file_name,
-        file_path=file_path,
-        is_password_protected=bool(password)
-    )
-
-    insert_upload_audit(document_id, "UPLOADED")
-
-    try:
-        # ------------------------------------------------------
-        # 2️⃣ Mark Processing
-        # ------------------------------------------------------
-        update_document_status(document_id, "PROCESSING")
-        insert_upload_audit(document_id, "PROCESSING")
-
-        # ------------------------------------------------------
-        # 3️⃣ Save Password (if any)
-        # ------------------------------------------------------
         if password:
-            # You should encrypt before storing
-            save_document_password(document_id, password)
+            cursor.execute("""
+                INSERT INTO document_password (document_id, encrypted_password)
+                VALUES (%s, %s)
+            """, (document_id, password))
 
-        # ------------------------------------------------------
-        # 4️⃣ Save Extracted Text
-        # ------------------------------------------------------
-        save_extracted_text(document_id, extracted_text)
+        cursor.execute("""
+            INSERT INTO document_upload_audit (document_id, status)
+            VALUES (%s, 'UPLOADED')
+        """, (document_id,))
 
-        # ------------------------------------------------------
-        # 5️⃣ Link Statement Format
-        # ------------------------------------------------------
-        link_statement_to_document(document_id, statement_id)
+    logger.info("Created document_id=%s file=%s user_id=%s",
+                document_id, file_name, user_id)
+    return document_id
 
-        # ------------------------------------------------------
-        # 6️⃣ Store Extracted Transactions (Staging)
-        # ------------------------------------------------------
-        insert_statement_transactions(
-            document_id,
-            statement_id,
-            extracted_transactions
-        )
 
-        # ------------------------------------------------------
-        # 7️⃣ Run Review Engine
-        # ------------------------------------------------------
-        review_result = run_review_engine(
-            statement_id,
-            file_path,
-            extracted_text
-        )
-
-        # ------------------------------------------------------
-        # 8️⃣ Mark Completed
-        # ------------------------------------------------------
-        update_document_status(document_id, "COMPLETED")
-        insert_upload_audit(document_id, "COMPLETED")
-
-        return {
-            "document_id": document_id,
-            "review_result": review_result
-        }
-
-    except Exception as e:
-
-        update_document_status(document_id, "FAILED")
-        insert_upload_audit(document_id, "FAILED", str(e))
-
-        raise e
+def get_user_documents(user_id: int) -> list:
+    """Get all documents for a user, most recent first."""
+    with get_cursor(dictionary=True) as (conn, cursor):
+        cursor.execute("""
+            SELECT document_id, file_name, status, created_at,
+                   transaction_parsed_type, processing_started_at,
+                   processing_completed_at
+            FROM documents
+            WHERE user_id=%s AND is_active=TRUE
+            ORDER BY created_at DESC
+        """, (user_id,))
+        return cursor.fetchall()

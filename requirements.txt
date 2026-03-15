@@ -1,7 +1,8 @@
 mysql-connector-python
 python-dotenv
 pdfplumber
-pydantic
-ollama
-fastapi
-uvicorn
+pypdf
+google-genai
+bcrypt
+streamlit
+pandas

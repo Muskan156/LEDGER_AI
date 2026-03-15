@@ -1,0 +1,25 @@
+# Environment & Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Uploads
+uploads/
+
+# Node
+node_modules/
+
+# OS
+Thumbs.db
+.DS_Store
