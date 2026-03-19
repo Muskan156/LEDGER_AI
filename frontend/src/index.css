@@ -38,9 +38,6 @@ body {
   font-family: 'Inter', system-ui, sans-serif;
   background: var(--bg);
   min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -52,6 +49,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
+  background: var(--bg);
 }
 
 /* ─── Card — matches the template's compact floating card ─ */
