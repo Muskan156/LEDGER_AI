@@ -8,15 +8,17 @@ Mirrors app.py's auth helpers exactly:
 import hashlib
 import datetime
 import uuid
+import sys, os
+import logging
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
-import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRE_HOURS
 from db.connection import get_cursor
 
+logger = logging.getLogger("ledgerai.auth")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
@@ -30,11 +32,11 @@ def create_access_token(user_id: int) -> str:
         "user_id": user_id,
         "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=JWT_EXPIRE_HOURS),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)  # jose returns str directly
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def decode_token(token: str) -> dict:
-    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])  # jose
+    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
 
 
 def get_user_by_email(email: str) -> dict | None:
@@ -65,6 +67,7 @@ def create_session(user_id: int) -> str:
             (user_id, token, expires_at),
         )
     return token
+
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(

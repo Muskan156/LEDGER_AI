@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { motion } from "framer-motion";
 import { FileUp, CheckCircle, Loader2, AlertCircle, Search, Cpu, List, Lock } from "lucide-react";
 import AppLayout from "../components/Layout";
@@ -6,6 +6,16 @@ import API from "../api/api";
 import { useNavigate } from "react-router-dom";
 
 export default function UploadPage() {
+    const navigate = useNavigate();
+
+    // Auth check - ensure user is logged in
+    useEffect(() => {
+        const token = localStorage.getItem("token");
+        if (!token) {
+            navigate("/");
+        }
+    }, [navigate]);
+
     const [file, setFile] = useState(null);
     const [password, setPassword] = useState("");
     const [needsPassword, setNeedsPassword] = useState(false);
@@ -16,7 +26,6 @@ export default function UploadPage() {
     const [error, setError] = useState("");
     const [documentId, setDocumentId] = useState(null);
     const fileInputRef = useRef(null);
-    const navigate = useNavigate();
 
     const steps = [
         {
@@ -195,11 +204,11 @@ export default function UploadPage() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
             >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
+                <div style={{ marginBottom: '2rem' }}>
                     <h2 style={{ fontSize: '1.75rem', fontWeight: 800, color: '#1a1a2e' }}>Extract PDF</h2>
                 </div>
 
-                <div className="upload-card">
+                <div className="upload-page-card">
                     {/* Stepper */}
                     {showStepper && (
                         <div>

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, Depends
+from fastapi.responses import JSONResponse
 import os
 import shutil
 import tempfile
@@ -6,6 +7,8 @@ import pdfplumber
 import json
 import logging
 import threading
+import uuid
+import hashlib
 from typing import Optional
 from db.connection import get_cursor
 from auth.utils import get_current_user
@@ -256,8 +259,12 @@ async def upload_and_process(
     logger.info("   ├─ user_id     : %s", user_id)
     logger.info("   ├─ password    : %s", "YES" if password else "NO")
 
-    # Save file to disk
-    file_path = os.path.join(UPLOAD_DIR, f"{user_id}_{file.filename}")
+    # Save file to disk with a hashed filename for security
+    # Generate a cryptographically opaque filename so users can't guess paths
+    unique_token = uuid.uuid4().hex
+    file_hash = hashlib.sha256(f"{user_id}_{file.filename}_{unique_token}".encode()).hexdigest()[:24]
+    safe_filename = f"{file_hash}.pdf"
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
@@ -498,3 +505,117 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
         )
 
     return {"message": "Document approved", "inserted": inserted}
+
+
+@router.delete("/{document_id}")
+async def delete_document(document_id: int, user=Depends(get_current_user)):
+    """
+    Delete a document: removes the file from disk and marks status as DELETED.
+    Also removes any staging transactions.
+    """
+    user_id = user["user_id"]
+
+    with get_cursor(commit=True, dictionary=True) as (_, cursor):
+        # Verify ownership
+        cursor.execute(
+            "SELECT document_id, file_path, status FROM documents WHERE document_id = %s AND user_id = %s",
+            (document_id, user_id),
+        )
+        doc = cursor.fetchone()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Remove physical file if it exists
+        file_path = doc.get("file_path")
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info("🗑️ Deleted file: %s", file_path)
+            except Exception as e:
+                logger.warning("Could not delete file %s: %s", file_path, e)
+
+        # Remove staging transactions
+        cursor.execute(
+            "DELETE FROM ai_transactions_staging WHERE document_id = %s",
+            (document_id,),
+        )
+
+        # Remove from uncategorized_transactions if any
+        cursor.execute(
+            "DELETE FROM uncategorized_transactions WHERE document_id = %s",
+            (document_id,),
+        )
+
+        # Delete the document record
+        cursor.execute(
+            "DELETE FROM documents WHERE document_id = %s AND user_id = %s",
+            (document_id, user_id),
+        )
+
+    logger.info("🗑️ Document %s deleted by user %s", document_id, user_id)
+    return {"message": "Document deleted successfully"}
+
+
+@router.get("/{document_id}/download-json")
+async def download_transactions_json(document_id: int, user=Depends(get_current_user)):
+    """
+    Download the extracted transactions JSON for a document.
+    Uses the parser_type (CODE or LLM) as per the document's transaction_parsed_type:
+    - If transaction_parsed_type is LLM → return LLM staging JSON
+    - Otherwise → return CODE staging JSON (fallback to LLM if CODE not available)
+    """
+    user_id = user["user_id"]
+
+    with get_cursor(dictionary=True) as (_, cursor):
+        # Verify ownership and get parser type
+        cursor.execute(
+            "SELECT document_id, file_name, transaction_parsed_type FROM documents WHERE document_id = %s AND user_id = %s",
+            (document_id, user_id),
+        )
+        doc = cursor.fetchone()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Determine which parser type to serve
+        # transaction_parsed_type is 'LLM' or 'CODE'
+        preferred_parser = doc.get("transaction_parsed_type") or "CODE"
+
+        # Get all staging rows
+        cursor.execute(
+            "SELECT transaction_json, parser_type FROM ai_transactions_staging WHERE document_id = %s",
+            (document_id,),
+        )
+        staging_rows = cursor.fetchall()
+
+        if not staging_rows:
+            raise HTTPException(status_code=404, detail="No extracted transactions found for this document")
+
+        # Find the preferred parser row
+        chosen_json = None
+        fallback_json = None
+        for row in staging_rows:
+            txn_data = row["transaction_json"]
+            if isinstance(txn_data, str):
+                txn_data = json.loads(txn_data)
+            if row["parser_type"] == preferred_parser:
+                chosen_json = txn_data
+            else:
+                fallback_json = txn_data
+
+        result_json = chosen_json if chosen_json is not None else fallback_json
+        if result_json is None:
+            raise HTTPException(status_code=404, detail="No transaction JSON available")
+
+    safe_name = doc["file_name"].replace(".pdf", "").replace(" ", "_")
+    return JSONResponse(
+        content={
+            "document_id": document_id,
+            "file_name": doc["file_name"],
+            "parser_type": preferred_parser,
+            "transaction_count": len(result_json),
+            "transactions": result_json,
+        },
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}_transactions.json"'
+        }
+    )

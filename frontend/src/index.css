@@ -243,24 +243,9 @@ body {
 }
 
 /* ─── Upload Page ────────────────────────────────────── */
+/* Main card: see .upload-page-card below */
 .upload-page {
   width: 100%;
-}
-
-.upload-card {
-  background: var(--white);
-  width: 100%;
-  border-radius: var(--card-radius);
-  padding: 3rem;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
-  margin: 0 auto;
-}
-
-.upload-card h2 {
-  font-size: 1.25rem;
-  font-weight: 700;
-  margin-bottom: 2rem;
-  color: var(--text);
 }
 
 .dropzone {
@@ -366,87 +351,151 @@ body {
   margin-top: 2rem;
 }
 
-/* ─── Layout & Sidebar ──────────────────────────────── */
+/* ─── Layout — Header-based ─────────────────────────── */
 .app-container {
   display: flex;
+  flex-direction: column;
+  /* stack header on top, content below */
   min-height: 100vh;
+  width: 100%;
+  /* align-self: stretch ensures the app fills full viewport width
+     even when body uses justify-content: center (needed for auth pages) */
+  align-self: stretch;
   background: #f8f9fc;
 }
 
-.sidebar {
-  width: 260px;
-  background: var(--white);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  padding: 2rem 1.5rem;
+/* ── Top Header ─────────────────────────────────────── */
+.top-header {
   position: sticky;
   top: 0;
-  height: 100vh;
+  z-index: 100;
+  width: 100%;
+  background: var(--white);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
 }
 
-.sidebar-logo {
-  margin-bottom: 3rem;
+.top-header-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2.5rem;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
 }
 
-.sidebar-logo h1 {
-  font-size: 1.1rem;
+/* Brand */
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.header-brand-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 0 0 3px rgba(72, 62, 168, 0.18);
+}
+
+.header-brand-name {
+  font-size: 0.95rem;
   font-weight: 800;
   color: var(--text);
-  letter-spacing: 0.5px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.sidebar-logo p {
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.nav-links {
+/* Nav links */
+.header-nav {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.25rem;
   flex: 1;
 }
 
-.nav-item {
-  display: flex;
+.header-nav-item {
+  display: inline-flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
+  gap: 0.45rem;
+  padding: 0.45rem 1rem;
   border-radius: 8px;
   color: #4b5563;
   text-decoration: none;
-  font-size: 0.875rem;
+  font-size: 0.85rem;
   font-weight: 500;
-  transition: all 0.2s;
+  transition: background 0.18s, color 0.18s;
+  white-space: nowrap;
 }
 
-.nav-item:hover {
+.header-nav-item:hover {
   background: #eff1f9;
   color: var(--brand);
 }
 
-.nav-item--active {
+.header-nav-item--active {
   background: #eff1f9;
   color: var(--brand);
+  font-weight: 700;
 }
 
-.logout-btn {
-  margin-top: auto;
-  border-top: 1px solid var(--border);
-  padding-top: 1.5rem;
+/* User area */
+.header-user {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
+.header-email {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.header-logout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 1rem;
+  background: transparent;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #4b5563;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.18s, border-color 0.18s, color 0.18s;
+}
+
+.header-logout-btn:hover {
+  background: #fdf0ef;
+  border-color: #fbdbd9;
+  color: var(--error);
+}
+
+/* ── Main Content ────────────────────────────────────── */
 .main-content {
   flex: 1;
-  padding: 2.5rem 3rem;
-  overflow-y: auto;
-  min-width: 0;
-  max-width: 1020px;
+  /* grow to fill remaining vertical space */
   width: 100%;
-  margin: 0;
-  /* Ensures consistent left-alignment across all screens */
+  /* always fill the full viewport width */
+  overflow-y: auto;
+  background: #f8f9fc;
+}
+
+/* Centered inner wrapper — all page content sits inside this */
+.page-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2.5rem 3rem;
+  box-sizing: border-box;
+  width: 100%;
 }
 
 
@@ -638,15 +687,44 @@ body {
   border-bottom: 1px solid #f3f4f6;
 }
 
-.upload-card {
+/* Upload page dedicated card — keeps full width independent of review-card styles */
+.upload-page-card {
   background: white;
   border-radius: 16px;
   padding: 3.5rem;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.04);
   width: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 2rem;
+  align-self: stretch;
+  /* ensure it stretches inside flex parent */
+}
+
+/* Download JSON button — outlined style matching brand purple, like approve */
+.download-json-btn {
+  padding: 0.5rem 1.25rem;
+  background: transparent;
+  color: var(--brand);
+  border: 2px solid var(--brand);
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 0.85rem;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, box-shadow 0.2s, transform 0.15s;
+  white-space: nowrap;
+}
+
+.download-json-btn:hover {
+  background: var(--brand);
+  color: white;
+  box-shadow: 0 4px 12px rgba(72, 62, 168, 0.3);
+  transform: translateY(-1px);
 }
 
 .json-view {

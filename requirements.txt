@@ -6,3 +6,6 @@ google-genai
 bcrypt
 streamlit
 pandas
+pymupdf
+camelot-py[base]
+opencv-python

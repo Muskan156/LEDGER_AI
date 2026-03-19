@@ -9,7 +9,8 @@ import {
     ChevronDown,
     Copy,
     Table as TableIcon,
-    Loader2 as SpinIcon
+    Loader2 as SpinIcon,
+    Trash2
 } from "lucide-react";
 import AppLayout from "../components/Layout";
 import API from "../api/api";
@@ -51,6 +52,21 @@ export default function DashboardPage() {
         if (sortOption === "Alphabetically") return a.file_name.localeCompare(b.file_name);
         return 0; // default
     });
+
+    const handleDeleteDocument = async (docId, fileName) => {
+        const confirmed = window.confirm(`Are you sure you want to delete "${fileName}"? This action cannot be undone.`);
+        if (!confirmed) return;
+        try {
+            await API.delete(`/documents/${docId}`);
+            setRecentDocs(prev => prev.filter(d => d.document_id !== docId));
+            // Refresh stats as well
+            const statsRes = await API.get("/documents/stats");
+            setStats(statsRes.data);
+        } catch (err) {
+            console.error("Delete failed", err);
+            alert("Failed to delete document: " + (err.response?.data?.detail || err.message));
+        }
+    };
 
     const statCards = [
         { label: "Total Uploads", value: stats.total, icon: FileText, color: "#483EA8" },
@@ -209,24 +225,48 @@ export default function DashboardPage() {
                                                 {formatTime(doc.created_at)}
                                             </td>
                                             <td style={{ textAlign: 'center', paddingRight: '2rem' }}>
-                                                <button
-                                                    onClick={() => navigate(`/review?id=${doc.document_id}`)}
-                                                    style={{
-                                                        background: 'none',
-                                                        border: '1px solid #e5e7eb',
-                                                        padding: '6px 12px',
-                                                        borderRadius: '6px',
-                                                        fontSize: '0.75rem',
-                                                        fontWeight: 600,
-                                                        color: '#483EA8',
-                                                        display: 'inline-flex',
-                                                        alignItems: 'center',
-                                                        gap: '4px',
-                                                        cursor: 'pointer'
-                                                    }}
-                                                >
-                                                    <TableIcon size={14} /> Transactions
-                                                </button>
+                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
+                                                    <button
+                                                        onClick={() => navigate(`/review?id=${doc.document_id}`)}
+                                                        style={{
+                                                            background: 'none',
+                                                            border: '1px solid #e5e7eb',
+                                                            padding: '6px 12px',
+                                                            borderRadius: '6px',
+                                                            fontSize: '0.75rem',
+                                                            fontWeight: 600,
+                                                            color: '#483EA8',
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            gap: '4px',
+                                                            cursor: 'pointer',
+                                                            transition: 'all 0.2s'
+                                                        }}
+                                                    >
+                                                        <TableIcon size={14} /> Transactions
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDeleteDocument(doc.document_id, doc.file_name)}
+                                                        title="Delete document"
+                                                        style={{
+                                                            background: 'none',
+                                                            border: '1px solid #fecaca',
+                                                            padding: '6px 8px',
+                                                            borderRadius: '6px',
+                                                            fontSize: '0.75rem',
+                                                            fontWeight: 600,
+                                                            color: '#e74c3c',
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            cursor: 'pointer',
+                                                            transition: 'all 0.2s'
+                                                        }}
+                                                        onMouseEnter={e => { e.currentTarget.style.background = '#fef2f2'; }}
+                                                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
+                                                    >
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                </div>
                                             </td>
                                         </tr>
                                     ))

@@ -3,48 +3,63 @@ import { LayoutDashboard, FileUp, LogOut } from "lucide-react";
 
 export default function AppLayout({ children }) {
     const navigate = useNavigate();
-    const userEmail = "user@gmail.com"; // Mock user for now
+    const userEmail = localStorage.getItem("userEmail") || "user@gmail.com";
 
     const handleLogout = () => {
         localStorage.removeItem("token");
+        localStorage.removeItem("userEmail");
         navigate("/");
     };
 
     return (
         <div className="app-container">
-            <aside className="sidebar">
-                <div className="sidebar-logo">
-                    <h1>LEDGER AI</h1>
-                    <p>{userEmail}</p>
+            {/* ── Top Header ── */}
+            <header className="top-header">
+                <div className="top-header-inner">
+                    {/* Brand */}
+                    <div className="header-brand">
+                        <span className="header-brand-dot" />
+                        <span className="header-brand-name">LEDGER AI</span>
+                    </div>
+
+                    {/* Nav links */}
+                    <nav className="header-nav">
+                        <NavLink
+                            to="/dashboard"
+                            className={({ isActive }) =>
+                                isActive ? "header-nav-item header-nav-item--active" : "header-nav-item"
+                            }
+                        >
+                            <LayoutDashboard size={16} />
+                            Dashboard
+                        </NavLink>
+                        <NavLink
+                            to="/upload"
+                            className={({ isActive }) =>
+                                isActive ? "header-nav-item header-nav-item--active" : "header-nav-item"
+                            }
+                        >
+                            <FileUp size={16} />
+                            Extract PDF
+                        </NavLink>
+                    </nav>
+
+                    {/* User + Logout */}
+                    <div className="header-user">
+                        <span className="header-email">{userEmail}</span>
+                        <button className="header-logout-btn" onClick={handleLogout}>
+                            <LogOut size={15} />
+                            Logout
+                        </button>
+                    </div>
                 </div>
+            </header>
 
-                <nav className="nav-links">
-                    <NavLink
-                        to="/dashboard"
-                        className={({ isActive }) => isActive ? "nav-item nav-item--active" : "nav-item"}
-                    >
-                        <LayoutDashboard size={20} />
-                        Dashboard
-                    </NavLink>
-                    <NavLink
-                        to="/upload"
-                        className={({ isActive }) => isActive ? "nav-item nav-item--active" : "nav-item"}
-                    >
-                        <FileUp size={20} />
-                        Extract PDF
-                    </NavLink>
-                </nav>
-
-                <div className="logout-btn">
-                    <button onClick={handleLogout} className="nav-item" style={{ width: '100%', background: 'none', border: 'none', cursor: 'pointer' }}>
-                        <LogOut size={20} />
-                        Logout
-                    </button>
-                </div>
-            </aside>
-
+            {/* ── Page content ── */}
             <main className="main-content">
-                {children}
+                <div className="page-inner">
+                    {children}
+                </div>
             </main>
         </div>
     );

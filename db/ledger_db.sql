@@ -167,28 +167,7 @@ CREATE TABLE account_identifiers (
     FOREIGN KEY (account_id) REFERENCES accounts(account_id),
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
- INSERT INTO account_identifiers (
-    account_id,
-    user_id,
-    institution_name,
-    account_number_masked,
-    account_number_last4,
-    ifsc_code,
-    confidence_score,
-    is_primary,
-    is_active
-)
-VALUES (
-    1,                         -- Replace with real account_id
-    3,
-    'State Bank of India',
-    'XXXXXX9589',
-    '9589',
-    'SBIN0008234',
-    100.00,
-    TRUE,
-    TRUE
-);
+ 
 CREATE TABLE document_account_match_log (
     match_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     document_id BIGINT NOT NULL,
@@ -425,3 +404,6 @@ CREATE TABLE ai_monthly_summaries(
     generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
+
+
+

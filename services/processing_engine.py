@@ -1,29 +1,9 @@
-"""
-services/processing_engine.py
-─────────────────────────────
-CENTRAL ORCHESTRATOR — implements the complete document processing
-pipeline as defined in the specification.
-
-Flow:
-  STEP 1 — Document upload (handled by app.py / caller)
-  STEP 2 — Format check in DB
-  STEP 3 — Generate identification markers (if new)
-  STEP 4 — Dual extraction (CODE + LLM)
-  STEP 5 — Validation engine
-  DECISION — Route to correct outcome
-
-Key invariants:
-  • User ALWAYS receives transactions.
-  • User NEVER sees inconsistent/partial data.
-  • ACTIVE formats skip LLM completely.
-  • Only validated code becomes ACTIVE.
-"""
-
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 
-from services.pdf_service import extract_pages
+from services.pdf_service import extract_pdf_text
 from services.identifier_service import (
     reduce_text,
     find_existing_identifier,
@@ -38,7 +18,8 @@ from services.llm_parser import parse_with_llm
 from services.validation_service import (
     validate_transactions,
     extract_json_from_response,
-    validate_extraction_propriety
+    validate_extraction_propriety,
+    validate_code_quality_strict,       
 )
 from repository.document_repo import (
     get_document,
@@ -61,6 +42,44 @@ from repository.statement_category_repo import (
 logger = logging.getLogger("ledgerai.processing_engine")
 
 
+# ═══════════════════════════════════════════════════════════
+# BUG-01 FIX — Page splitter for extract_pdf_text() output
+# ═══════════════════════════════════════════════════════════
+
+def _split_pages_from_full_text(full_text: str) -> list:
+    
+    blocks = re.split(r'(?:═{10,})', full_text)
+
+    pages = []
+    # Header lines look like:  "  PAGE 1  [BORDERED  H:12 V:5]"
+    page_header_re = re.compile(r'^\s*PAGE\s+\d+\s*\[', re.IGNORECASE)
+
+    for block in blocks:
+        stripped = block.strip()
+        if not stripped:
+            continue
+        # Skip pure page-header lines (the line between the two ════ rows)
+        if page_header_re.match(stripped):
+            continue
+        # Skip single-line blocks that are only a page header
+        lines = [l for l in stripped.splitlines() if l.strip()]
+        if not lines:
+            continue
+        if len(lines) == 1 and page_header_re.match(lines[0]):
+            continue
+        # Remove leading page-header line if it's the first content line
+        if page_header_re.match(lines[0]):
+            lines = lines[1:]
+        if lines:
+            pages.append('\n'.join(lines))
+
+    return pages
+
+
+# ═══════════════════════════════════════════════════════════
+# MAIN PIPELINE
+# ═══════════════════════════════════════════════════════════
+
 def process_document(document_id: int):
     """
     Main entry point. Called after document is inserted into DB.
@@ -68,9 +87,9 @@ def process_document(document_id: int):
     """
 
     try:
-        # ═══════════════════════════════════════════════════
+        # ─────────────────────────────────────────────────────
         # STEP 1 — FETCH DOCUMENT
-        # ═══════════════════════════════════════════════════
+        # ─────────────────────────────────────────────────────
         logger.info("")
         logger.info("═" * 70)
         logger.info("  PIPELINE START — document_id=%s", document_id)
@@ -81,42 +100,52 @@ def process_document(document_id: int):
             raise ValueError(f"Document {document_id} not found.")
 
         file_path = doc["file_path"]
-        user_id = doc["user_id"]
-        password = get_document_password(document_id)
-        logger.info("═" * 70)
+        user_id   = doc["user_id"]
+        password  = get_document_password(document_id)
+
         logger.info("[STEP 1/5] Document fetched")
         logger.info("file      : %s", doc["file_name"])
         logger.info("path      : %s", file_path)
         logger.info("user_id   : %s", user_id)
         logger.info("password  : %s", "YES" if password else "NO")
         logger.info("═" * 70)
-        # Mark processing started
+
         update_processing_start(document_id)
         insert_audit(document_id, "PROCESSING")
 
-        # ═══════════════════════════════════════════════════
-        # TEXT EXTRACTION
-        # ═══════════════════════════════════════════════════
+        # ─────────────────────────────────────────────────────
+        # STEP 2 — EXTRACT TEXT FROM PDF
+        # ─────────────────────────────────────────────────────
         logger.info("")
         logger.info("[STEP 2/5] Extracting text from PDF...")
-        pages = extract_pages(file_path, password)
-        if not pages:
-            raise ValueError("PDF extraction returned no pages.")
+        update_document_status(document_id, "EXTRACTING_TEXT")
 
-        full_text = "\n".join(pages)
+        full_text = extract_pdf_text(file_path, password)
+        
+        if not full_text:
+            raise ValueError("PDF extraction returned empty text.")
+
+        
+        pages = _split_pages_from_full_text(full_text)
+        if not pages:
+            
+            logger.warning("_split_pages_from_full_text returned empty — using full_text as single page")
+            pages = [full_text]
+
         reduced = reduce_text(pages)
 
         logger.info("pages     : %d", len(pages))
         logger.info("chars     : %d", len(full_text))
+        logger.info("first_page_len : %d", len(reduced.get("first_page", "")))
         logger.info("Text extracted successfully")
-        logger.info("full_text : %s", full_text)
         logger.info("═" * 70)
-        update_document_status(document_id, "IDENTIFYING_FORMAT")
-        insert_text_extraction(document_id, full_text)
 
-        # ═══════════════════════════════════════════════════
-        # STEP 2 — FORMAT CHECK IN DATABASE
-        # ═══════════════════════════════════════════════════
+        insert_text_extraction(document_id, full_text)
+        update_document_status(document_id, "IDENTIFYING_FORMAT")
+
+        # ─────────────────────────────────────────────────────
+        # STEP 3 — FORMAT CHECK IN DATABASE
+        # ─────────────────────────────────────────────────────
         logger.info("")
         logger.info("[STEP 3/5] Checking if format exists in database...")
         matched, existing = find_existing_identifier(full_text)
@@ -129,97 +158,90 @@ def process_document(document_id: int):
         else:
             logger.info("NO MATCHING FORMAT — new format detected")
         logger.info("═" * 70)
+
         update_document_status(document_id, "PARSING_TRANSACTIONS")
 
         # ═══════════════════════════════════════════════════
-        # CASE A — FORMAT EXISTS
+        # CASE A — FORMAT EXISTS IN DB
         # ═══════════════════════════════════════════════════
         if matched:
-            identity_json = existing.get("statement_identifier", {})
-            extraction_code = existing["extraction_logic"]
-            statement_id = existing["statement_id"]
+            identity_json    = existing.get("statement_identifier", {})
+            extraction_code  = existing["extraction_logic"]
+            statement_id     = existing["statement_id"]
             statement_status = existing.get("status")
 
             update_document_statement(document_id, statement_id)
 
-            # ─────────────────────────────────────────────
-            # CASE A1 — STATUS = ACTIVE → Fast path (CODE ONLY)
-            # ─────────────────────────────────────────────
+            # ── CASE A1 — ACTIVE → Fast path (CODE ONLY, no LLM) ──
             if statement_status == "ACTIVE":
                 logger.info("")
                 logger.info("[STEP 4/5] ACTIVE format — running stored extraction code (fast path)...")
                 logger.info("Skipping LLM (format is trusted)")
+
                 code_txns = extract_transactions_using_logic(full_text, extraction_code)
                 logger.info("Code extracted %d transactions", len(code_txns))
 
-                if validate_extraction_propriety(code_txns):
-                    logger.info("Code transactions are valid")
-                    logger.info("")
-                    logger.info("[STEP 5/5] PIPELINE COMPLETE")
-                    logger.info("Winner    : CODE (ACTIVE fast-path)")
-                    logger.info("Txns      : %d", len(code_txns))
-                    logger.info("Status    : AWAITING_REVIEW")
+                propriety_ok = validate_extraction_propriety(code_txns)
+                strict_ok    = validate_code_quality_strict(code_txns)   # BUG-02 fix
+
+                if propriety_ok and strict_ok:
+                    logger.info("[STEP 5/5] PIPELINE COMPLETE — CODE (ACTIVE fast-path)")
                     update_processing_complete(document_id, "CODE")
                     insert_staging_code_only(document_id, user_id, code_txns, 100.0)
                     update_document_status(document_id, "AWAITING_REVIEW")
                     insert_audit(document_id, "COMPLETED")
                     logger.info("═" * 70)
-                    return  # ← EXIT
-                else:
-                    logger.warning("ACTIVE code produced improper transactions!")
-                    logger.warning("Downgrading statement_id=%s to UNDER_REVIEW", statement_id)
-                    update_statement_status(statement_id, "UNDER_REVIEW")
-                    # No return here, fallthrough to dual pipeline
+                    return  # ← EXIT fast path
 
-            # ─────────────────────────────────────────────
-            # CASE A2 — STATUS = EXPERIMENTAL → LLM ONLY (as requested)
-            # ─────────────────────────────────────────────
+                else:
+                    logger.warning(
+                        "ACTIVE code produced improper transactions "
+                        "(propriety=%s strict=%s) — downgrading to UNDER_REVIEW",
+                        propriety_ok, strict_ok
+                    )
+                    update_statement_status(statement_id, "UNDER_REVIEW")
+                    # Fall through to dual pipeline below
+
+            # ── CASE A2 — EXPERIMENTAL → LLM ONLY ──
             elif statement_status == "EXPERIMENTAL":
                 logger.info("")
-                logger.info("[STEP 4/5] EXPERIMENTAL format — using LLM extraction only...")
-                logger.info("Generating transactions using LLM...")
+                logger.info("[STEP 4/5] EXPERIMENTAL format — LLM extraction only...")
+
                 llm_response = parse_with_llm(full_text, identity_json)
-                llm_txns = extract_json_from_response(llm_response)
+                llm_txns     = extract_json_from_response(llm_response)
                 logger.info("LLM extracted %d transactions", len(llm_txns))
 
-                logger.info("")
-                logger.info("[STEP 5/5] PIPELINE COMPLETE")
-                logger.info("Winner    : LLM (EXPERIMENTAL path)")
-                logger.info("Txns      : %d", len(llm_txns))
-                logger.info("Status    : AWAITING_REVIEW")
-                logger.info("═" * 70)
+                logger.info("[STEP 5/5] PIPELINE COMPLETE — LLM (EXPERIMENTAL path)")
                 update_processing_complete(document_id, "LLM")
-                # Store in staging (code set is empty)
                 insert_staging_transactions(
                     document_id=document_id, user_id=user_id,
                     code_txns=[], llm_txns=llm_txns,
-                    code_confidence=0.0, llm_confidence=0.85
+                    code_confidence=0.0, llm_confidence=0.85,
                 )
                 update_document_status(document_id, "AWAITING_REVIEW")
                 insert_audit(document_id, "COMPLETED")
                 logger.info("═" * 70)
                 return  # ← EXIT
 
-            # ─────────────────────────────────────────────
-            # CASE A3 — STATUS = UNDER_REVIEW → Dual Pipeline
-            # ─────────────────────────────────────────────
-            logger.info("")
+            # ── CASE A3 — UNDER_REVIEW → Fall through to dual pipeline ──
             logger.info("UNDER_REVIEW format — continuing to dual pipeline...")
 
         # ═══════════════════════════════════════════════════
-        # CASE B — NEW FORMAT → CLASSIFY & GENERATE
+        # CASE B — NEW FORMAT → CLASSIFY + GENERATE
         # ═══════════════════════════════════════════════════
         else:
             logger.info("")
             logger.info("[STEP 3b/5] NEW FORMAT — generating identification markers via LLM...")
 
-            # STEP 3 — Generate identification markers
             identity_json = classify_document_llm(reduced)
-            logger.info("Family    : %s", identity_json.get("document_family", "?"))
-            logger.info("Institution: %s", identity_json.get("institution_name", "?"))
+
+            logger.info("Family      : %s", identity_json.get("document_family", "?"))
+            logger.info("Institution : %s", identity_json.get("institution_name", "?"))
+            logger.info("Layout      : %s", identity_json.get("parsing_hints", {}).get("layout_type", "?"))
+            logger.info("Boundaries  : %s", identity_json.get("parsing_hints", {}).get("transaction_boundary_signals"))
             logger.info("Identifiers generated")
             logger.info("═" * 70)
-            # STEP 4 — Generate extraction code
+
             logger.info("")
             logger.info("[STEP 3c/5] Generating extraction code via LLM...")
             extraction_code = generate_extraction_logic_llm(
@@ -228,7 +250,6 @@ def process_document(document_id: int):
             )
             logger.info("Extraction code generated (%d chars)", len(extraction_code))
 
-            # Save new format to DB
             logger.info("")
             logger.info("[STEP 3d/5] Saving new format to database...")
             statement_id = save_new_statement_format(
@@ -242,50 +263,47 @@ def process_document(document_id: int):
 
         # ═══════════════════════════════════════════════════
         # STEP 4 — DUAL EXTRACTION (CODE + LLM in parallel)
-        # Used for NEW formats or formats UNDER_REVIEW
+        # Reached for: NEW formats + UNDER_REVIEW formats
         # ═══════════════════════════════════════════════════
         logger.info("")
         logger.info("[STEP 4/5] Running DUAL PIPELINE (CODE + LLM in parallel)...")
 
         code_txns = []
-        llm_txns = []
+        llm_txns  = []
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            logger.info("Submitting CODE extraction task...")
             future_code = executor.submit(
                 extract_transactions_using_logic, full_text, extraction_code
             )
-            logger.info("Submitting LLM extraction task...")
             future_llm = executor.submit(
                 parse_with_llm, full_text, identity_json
             )
 
-            # LLM result — critical path (user always gets transactions)
+            # LLM — critical path (user always gets transactions even if CODE fails)
             try:
                 llm_response = future_llm.result()
-                llm_txns = extract_json_from_response(llm_response)
+                llm_txns     = extract_json_from_response(llm_response)
                 logger.info("LLM extraction complete: %d transactions", len(llm_txns))
             except Exception as e:
                 logger.error("LLM extraction FAILED: %s", e)
 
-            # CODE result — best-effort (failure falls back to LLM)
+            # CODE — best-effort (failure falls back to LLM)
             try:
                 code_txns = future_code.result()
                 logger.info("CODE extraction complete: %d transactions", len(code_txns))
             except Exception as e:
                 logger.warning("CODE extraction FAILED (will use LLM): %s", e)
 
-        logger.info("Results: CODE=%d txns | LLM=%d txns",
-                     len(code_txns), len(llm_txns))
+        logger.info("Results: CODE=%d txns | LLM=%d txns", len(code_txns), len(llm_txns))
 
         # ═══════════════════════════════════════════════════
-        # STEP 5 — VALIDATION & DECISION (Dual Only)
+        # STEP 5 — VALIDATION & DECISION
         # ═══════════════════════════════════════════════════
         logger.info("")
         logger.info("[STEP 5/5] VALIDATION & ACCURACY CHECK...")
 
-        metrics = validate_transactions(code_txns, llm_txns)
-        comparison_score = metrics.get("overall_accuracy", 0) if metrics else 0
+        metrics           = validate_transactions(code_txns, llm_txns)
+        comparison_score  = metrics.get("overall_accuracy", 0) if metrics else 0
 
         code_confidence = round(
             sum(t.get("confidence", 0) for t in code_txns) / len(code_txns), 2
@@ -295,33 +313,40 @@ def process_document(document_id: int):
             sum(t.get("confidence", 0) for t in llm_txns) / len(llm_txns), 2
         ) if llm_txns else 0
 
+        # BUG-02 fix: require BOTH gates to pass for CODE to win
         code_is_proper = validate_extraction_propriety(code_txns)
+        code_is_strict = validate_code_quality_strict(code_txns)
+        code_passes_quality = code_is_proper and code_is_strict
 
         logger.info("Code accuracy    : %.2f%%", comparison_score)
-        logger.info("Code confidence  : %.2f", code_confidence)
-        logger.info("LLM confidence   : %.2f", llm_confidence)
-        logger.info("Code is proper   : %s", "YES" if code_is_proper else "NO")
+        logger.info("Code confidence  : %.2f",   code_confidence)
+        logger.info("LLM confidence   : %.2f",   llm_confidence)
+        logger.info("Code propriety   : %s",      "PASS" if code_is_proper else "FAIL")
+        logger.info("Code strict gate : %s",      "PASS" if code_is_strict else "FAIL")
 
-        if comparison_score >= 90 and code_is_proper:
-            final_parser_type = "CODE"
+        # Decision: 90% weighted accuracy + both quality gates → CODE wins
+        if comparison_score >= 90 and code_passes_quality:
+            final_parser_type    = "CODE"
             new_statement_status = "ACTIVE"
-            logger.info("DECISION: CODE WINS (accuracy ≥ 90%% & proper)")
+            logger.info("DECISION: CODE WINS (accuracy=%.2f%% ≥ 90%% & both quality gates pass)", comparison_score)
             logger.info("Format status → ACTIVE")
         else:
-            final_parser_type = "LLM"
+            final_parser_type    = "LLM"
             new_statement_status = "EXPERIMENTAL"
             if not code_is_proper:
-                logger.info("DECISION: LLM WINS (code produced improper results)")
+                reason = "code propriety check failed"
+            elif not code_is_strict:
+                reason = "code strict quality gate failed"
             else:
-                logger.info("DECISION: LLM WINS (code accuracy %.2f%% < 90%%)", comparison_score)
+                reason = f"code accuracy {comparison_score:.2f}% < 90%"
+            logger.info("DECISION: LLM WINS (%s)", reason)
             logger.info("Format status → EXPERIMENTAL")
 
-        # Update DB state
+        # Persist DB state
         update_statement_status(statement_id, new_statement_status)
         update_success_rate(statement_id, comparison_score)
         update_processing_complete(document_id, final_parser_type)
 
-        # Store transactions
         insert_staging_transactions(
             document_id=document_id,
             user_id=user_id,
@@ -339,7 +364,8 @@ def process_document(document_id: int):
         logger.info("Winner       : %s", final_parser_type)
         logger.info("CODE txns    : %d", len(code_txns))
         logger.info("LLM txns     : %d", len(llm_txns))
-        logger.info("Status       : AWAITING_REVIEW")
+        logger.info("Accuracy     : %.2f%%", comparison_score)
+        logger.info("New status   : %s", new_statement_status)
         logger.info("═" * 70)
 
     except Exception as e:
@@ -352,5 +378,5 @@ def process_document(document_id: int):
             insert_audit(document_id, "FAILED", str(e))
         except Exception:
             logger.error("Failed to update failure status for document %s",
-                          document_id, exc_info=True)
+                         document_id, exc_info=True)
         raise

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Check, Code, FileSearch, Building2, Cpu, Loader2, ChevronLeft, CheckCircle } from "lucide-react";
+import { Check, Code, FileSearch, Building2, Cpu, Loader2, ChevronLeft, CheckCircle, Download } from "lucide-react";
 import AppLayout from "../components/Layout";
 import API from "../api/api";
 
@@ -51,6 +51,24 @@ export default function ReviewPage() {
             alert("Approval failed: " + (err.response?.data?.detail || err.message));
         } finally {
             setIsApproving(false);
+        }
+    };
+
+    const handleDownloadJson = async () => {
+        try {
+            const res = await API.get(`/documents/${documentId}/download-json`);
+            const jsonStr = JSON.stringify(res.data, null, 2);
+            const blob = new Blob([jsonStr], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            const safeName = (data?.bank_name || "transactions").replace(/\s+/g, "_");
+            a.download = `${safeName}_transactions.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error(err);
+            alert("Download failed: " + (err.response?.data?.detail || err.message));
         }
     };
 
@@ -137,7 +155,7 @@ export default function ReviewPage() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
             >
-                <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ marginBottom: '1.5rem' }}>
                     <button
                         onClick={() => navigate(-1)}
                         style={{
@@ -149,7 +167,9 @@ export default function ReviewPage() {
                             fontSize: '0.875rem',
                             color: '#6b7280',
                             cursor: 'pointer',
-                            fontWeight: 600
+                            fontWeight: 600,
+                            marginBottom: '0.75rem',
+                            padding: 0,
                         }}
                     >
                         <ChevronLeft size={16} /> Back
@@ -174,40 +194,48 @@ export default function ReviewPage() {
                         <label style={{ fontSize: '0.65rem', color: '#999', fontWeight: 600 }}>LLM Txns</label>
                         <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{data.llm_transactions?.length || 0}</span>
                     </div>
-                    <div style={{ marginLeft: 'auto' }}>
+                    <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        {/* Download JSON button — outlined brand-purple, hover fills solid */}
+                        <button
+                            onClick={handleDownloadJson}
+                            className="download-json-btn"
+                            title="Download extracted transactions as JSON"
+                        >
+                            <Download size={15} /> Download JSON
+                        </button>
+
                         {isApproved ? (
                             <button
                                 disabled
                                 style={{
                                     padding: '0.5rem 2rem',
-                                    marginTop: 0,
-                                    background: 'linear-gradient(135deg, #27ae60, #2ecc71)',
-                                    color: 'white',
-                                    border: 'none',
+                                    background: 'transparent',
+                                    color: '#27ae60',
+                                    border: '2px solid #27ae60',
                                     borderRadius: '10px',
                                     fontWeight: 700,
                                     fontSize: '0.85rem',
+                                    fontFamily: 'inherit',
                                     display: 'inline-flex',
                                     alignItems: 'center',
                                     gap: '8px',
                                     cursor: 'default',
-                                    opacity: 0.95,
-                                    boxShadow: '0 2px 8px rgba(39,174,96,0.3)',
+                                    opacity: 0.85,
                                 }}
                             >
                                 <CheckCircle size={16} /> APPROVED
                             </button>
                         ) : (
                             <button
-                                className="btn-submit"
+                                className="download-json-btn"
                                 onClick={handleApprove}
                                 disabled={isApproving}
-                                style={{ padding: '0.5rem 2rem', marginTop: 0, opacity: isApproving ? 0.7 : 1 }}
+                                style={{ padding: '0.5rem 2rem', opacity: isApproving ? 0.65 : 1, cursor: isApproving ? 'not-allowed' : 'pointer' }}
                             >
                                 {isApproving ? (
-                                    <><Loader2 size={16} className="spin-icon" style={{ marginRight: '8px' }} /> APPROVING...</>
+                                    <><Loader2 size={16} className="spin-icon" /> APPROVING...</>
                                 ) : (
-                                    <><Check size={16} style={{ marginRight: '8px' }} /> APPROVE</>
+                                    <><Check size={16} /> APPROVE</>
                                 )}
                             </button>
                         )}
