@@ -63,12 +63,12 @@ async def validate_config():
         logger.error("  MISSING / PLACEHOLDER SUPABASE CONFIG DETECTED")
         logger.error("  The following .env values must be set:")
         for v in issues:
-            logger.error("    ❌  %s", v)
+            logger.error("%s", v)
         logger.error("  Get values from: Supabase Dashboard → Settings → API")
         logger.error("  Auth and DB calls WILL FAIL until these are filled in.")
         logger.error("=" * 65)
     else:
-        logger.info("✅ Supabase config OK — all credentials present.")
+        logger.info("Supabase config OK — all credentials present.")
 
 
 @app.get("/health")
