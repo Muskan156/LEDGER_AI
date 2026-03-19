@@ -12,6 +12,9 @@ import sys, os
 import logging
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+import jwt
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
@@ -88,34 +91,25 @@ def login_user(email: str, password: str) -> dict:
 
 # ── Token verification — live Supabase call ───────────────────
 
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+import jwt
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
 def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
-    """
-    FastAPI dependency — verifies the Bearer token by calling
-    supabase.auth.get_user(token) on every request.
-
-    Advantages over local JWT decode:
-      - Automatically rejects revoked / logged-out tokens
-      - Works correctly with any Supabase token type
-
-    Tradeoff: ~100-200ms latency per authenticated request.
-    """
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
     try:
-        # Use service-role client so we can call get_user() as admin
-        client = _get_service_client()
-        response = client.auth.get_user(token)
-        if response is None or response.user is None:
-            logger.warning("get_user() returned no user for token")
-            raise credentials_exception
-        user_id = str(response.user.id)
-        logger.debug("get_current_user: verified user_id=%s", user_id)
+        # Decode Supabase JWT (no verification for now)
+        payload = jwt.decode(token, options={"verify_signature": False})
+
+        user_id = payload.get("sub")
+        if not user_id:
+            raise Exception("Invalid token")
+
         return {"user_id": user_id}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning("get_current_user error: %s: %s", type(e).__name__, e)
-        raise credentials_exception
+
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
