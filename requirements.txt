@@ -5,7 +5,6 @@ pdfplumber
 pypdf
 google-genai
 bcrypt
-streamlit
 pandas
 pymupdf
 camelot-py[base]
