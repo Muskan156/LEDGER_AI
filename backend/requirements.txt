@@ -13,3 +13,4 @@ fastapi
 uvicorn[standard]
 httpx
 email-validator
+python-multipart
