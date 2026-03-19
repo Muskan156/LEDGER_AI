@@ -1,5 +1,6 @@
-mysql-connector-python
+supabase
 python-dotenv
+python-jose[cryptography]
 pdfplumber
 pypdf
 google-genai
@@ -9,3 +10,6 @@ pandas
 pymupdf
 camelot-py[base]
 opencv-python
+fastapi
+uvicorn[standard]
+httpx

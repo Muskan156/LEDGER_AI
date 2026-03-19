@@ -56,8 +56,8 @@ body {
 .auth-card {
   display: flex;
   width: 100%;
-  max-width: 1100px;
-  /* Increased from 920px */
+  max-width: 920px;
+  /* Restored to 920px */
   min-height: 540px;
   border-radius: var(--card-radius);
   overflow: hidden;
@@ -685,19 +685,22 @@ body {
   border-bottom: 1px solid #f3f4f6;
 }
 
-/* Upload page dedicated card — keeps full width independent of review-card styles */
+/* Upload page dedicated card — centered and very compact */
 .upload-page-card {
   background: white;
   border-radius: 16px;
-  padding: 3.5rem;
+  padding: 1.75rem;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.04);
   width: 100%;
+  max-width: 500px;
+  /* Reduced to 500px per request */
+  margin: 0 auto;
+  /* Center within page-inner */
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 2rem;
-  align-self: stretch;
-  /* ensure it stretches inside flex parent */
+  gap: 1.25rem;
+  align-self: center;
 }
 
 /* Download JSON button — outlined style matching brand purple, like approve */

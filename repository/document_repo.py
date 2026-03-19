@@ -1,183 +1,193 @@
 """
 repository/document_repo.py
 ────────────────────────────
-All database operations for the documents table.
-Status enums from schema:
+All database operations for the documents table using the Supabase client.
+
+Status values:
   UPLOADED | PASSWORD_REQUIRED | EXTRACTING_TEXT | IDENTIFYING_FORMAT
   PARSING_TRANSACTIONS | AWAITING_REVIEW | CATEGORIZING | POSTED | APPROVE | FAILED
+
+user_id is a UUID string (Supabase auth.users.id).
 """
 
 import json
 import logging
-from db.connection import get_cursor
+from db.connection import get_client
 
 logger = logging.getLogger("ledgerai.document_repo")
 
 
 # ── READ ─────────────────────────────────────────────────
 
-def get_document(document_id: int):
-    with get_cursor(dictionary=True) as (conn, cursor):
-        cursor.execute("SELECT * FROM documents WHERE document_id=%s", (document_id,))
-        return cursor.fetchone()
+def get_document(document_id: int) -> dict | None:
+    sb = get_client()
+    result = sb.table("documents").select("*").eq("document_id", document_id).maybe_single().execute()
+    return result.data
 
 
-def get_document_password(document_id: int):
-    with get_cursor(dictionary=True) as (conn, cursor):
-        cursor.execute(
-            "SELECT encrypted_password FROM document_password WHERE document_id=%s",
-            (document_id,),
-        )
-        row = cursor.fetchone()
-        return row["encrypted_password"] if row else None
+def get_document_password(document_id: int) -> str | None:
+    sb = get_client()
+    result = (
+        sb.table("document_password")
+        .select("encrypted_password")
+        .eq("document_id", document_id)
+        .maybe_single()
+        .execute()
+    )
+    return result.data["encrypted_password"] if result.data else None
 
 
 # ── STATUS UPDATES ───────────────────────────────────────
 
 def update_document_status(document_id: int, status: str):
-    with get_cursor(commit=True) as (conn, cursor):
-        cursor.execute(
-            "UPDATE documents SET status=%s WHERE document_id=%s",
-            (status, document_id),
-        )
+    sb = get_client()
+    sb.table("documents").update({"status": status}).eq("document_id", document_id).execute()
 
 
 def update_processing_start(document_id: int):
-    with get_cursor(commit=True) as (conn, cursor):
-        cursor.execute("""
-            UPDATE documents
-            SET status='EXTRACTING_TEXT', processing_started_at=NOW()
-            WHERE document_id=%s
-        """, (document_id,))
+    import datetime
+    sb = get_client()
+    sb.table("documents").update({
+        "status": "EXTRACTING_TEXT",
+        "processing_started_at": datetime.datetime.utcnow().isoformat(),
+    }).eq("document_id", document_id).execute()
 
 
 def update_processing_complete(document_id: int, parser_type: str):
-    with get_cursor(commit=True) as (conn, cursor):
-        cursor.execute("""
-            UPDATE documents
-            SET transaction_parsed_type=%s, processing_completed_at=NOW()
-            WHERE document_id=%s
-        """, (parser_type, document_id))
+    import datetime
+    sb = get_client()
+    sb.table("documents").update({
+        "transaction_parsed_type": parser_type,
+        "processing_completed_at": datetime.datetime.utcnow().isoformat(),
+    }).eq("document_id", document_id).execute()
 
 
 # ── LINKING ──────────────────────────────────────────────
 
 def update_document_statement(document_id: int, statement_id: int):
-    with get_cursor(commit=True) as (conn, cursor):
-        cursor.execute(
-            "UPDATE documents SET statement_id=%s WHERE document_id=%s",
-            (statement_id, document_id),
-        )
+    sb = get_client()
+    sb.table("documents").update({"statement_id": statement_id}).eq("document_id", document_id).execute()
 
 
 # ── AUDIT ────────────────────────────────────────────────
 
 def insert_audit(document_id: int, status: str, error_message: str = None):
-    with get_cursor(commit=True) as (conn, cursor):
-        # Truncate to fit VARCHAR(500) column
-        if error_message and len(error_message) > 490:
-            error_message = error_message[:490] + "..."
-        cursor.execute("""
-            INSERT INTO document_upload_audit (document_id, status, error_message)
-            VALUES (%s, %s, %s)
-        """, (document_id, status, error_message))
+    if error_message and len(error_message) > 490:
+        error_message = error_message[:490] + "..."
+    sb = get_client()
+    sb.table("document_upload_audit").insert({
+        "document_id": document_id,
+        "status": status,
+        "error_message": error_message,
+    }).execute()
 
 
 # ── TEXT EXTRACTION ──────────────────────────────────────
 
 def insert_text_extraction(document_id: int, extracted_text: str):
-    with get_cursor(commit=True, prepared=True) as (conn, cursor):
-        cursor.execute("""
-            INSERT INTO document_text_extractions
-            (document_id, extraction_method, extracted_text, extraction_status)
-            VALUES (%s, 'PDF_TEXT', %s, 'SUCCESS')
-        """, (document_id, extracted_text))
+    sb = get_client()
+    sb.table("document_text_extractions").insert({
+        "document_id": document_id,
+        "extraction_method": "PDF_TEXT",
+        "extracted_text": extracted_text,
+        "extraction_status": "SUCCESS",
+    }).execute()
 
 
 # ── STAGING TRANSACTIONS ────────────────────────────────
-# Schema: ai_transactions_staging
-#   staging_transaction_id | document_id | user_id
-#   transaction_json (JSON) | parser_type ENUM('LLM','CODE')
-#   overall_confidence DECIMAL(5,2) | created_at
 
 def insert_staging_transactions(
     document_id: int,
-    user_id: int,
+    user_id: str,
     code_txns: list,
     llm_txns: list,
     code_confidence: float,
     llm_confidence: float,
 ):
-    with get_cursor(commit=True, prepared=True) as (conn, cursor):
-        # Insert CODE transactions
-        cursor.execute("""
-            INSERT INTO ai_transactions_staging
-            (document_id, user_id, transaction_json, parser_type, overall_confidence)
-            VALUES (%s, %s, %s, 'CODE', %s)
-        """, (document_id, user_id, json.dumps(code_txns), code_confidence))
-
-        # Insert LLM transactions
-        cursor.execute("""
-            INSERT INTO ai_transactions_staging
-            (document_id, user_id, transaction_json, parser_type, overall_confidence)
-            VALUES (%s, %s, %s, 'LLM', %s)
-        """, (document_id, user_id, json.dumps(llm_txns), llm_confidence))
+    sb = get_client()
+    sb.table("ai_transactions_staging").insert([
+        {
+            "document_id": document_id,
+            "user_id": user_id,
+            "transaction_json": code_txns,
+            "parser_type": "CODE",
+            "overall_confidence": code_confidence,
+        },
+        {
+            "document_id": document_id,
+            "user_id": user_id,
+            "transaction_json": llm_txns,
+            "parser_type": "LLM",
+            "overall_confidence": llm_confidence,
+        },
+    ]).execute()
 
 
 def insert_staging_code_only(
     document_id: int,
-    user_id: int,
+    user_id: str,
     code_txns: list,
     confidence: float,
 ):
     """For ACTIVE formats — only CODE transactions, no LLM."""
-    with get_cursor(commit=True, prepared=True) as (conn, cursor):
-        cursor.execute("""
-            INSERT INTO ai_transactions_staging
-            (document_id, user_id, transaction_json, parser_type, overall_confidence)
-            VALUES (%s, %s, %s, 'CODE', %s)
-        """, (document_id, user_id, json.dumps(code_txns), confidence))
+    sb = get_client()
+    sb.table("ai_transactions_staging").insert({
+        "document_id": document_id,
+        "user_id": user_id,
+        "transaction_json": code_txns,
+        "parser_type": "CODE",
+        "overall_confidence": confidence,
+    }).execute()
 
 
 # ── REVIEW PAGE ─────────────────────────────────────────
 
-def get_review_transactions(document_id: int):
+def get_review_transactions(document_id: int) -> dict | None:
     """Get the winning parser's staging row for review screen."""
-    with get_cursor(dictionary=True) as (conn, cursor):
-        cursor.execute("""
-            SELECT s.*, d.statement_id
-            FROM ai_transactions_staging s
-            JOIN documents d ON s.document_id = d.document_id
-            WHERE s.document_id=%s
-              AND s.parser_type = d.transaction_parsed_type
-            LIMIT 1
-        """, (document_id,))
-        return cursor.fetchone()
+    sb = get_client()
+    # First get the document to know which parser_type won
+    doc_result = sb.table("documents").select("transaction_parsed_type").eq("document_id", document_id).maybe_single().execute()
+    if not doc_result.data:
+        return None
+    parser_type = doc_result.data.get("transaction_parsed_type")
+    if not parser_type:
+        return None
+    result = (
+        sb.table("ai_transactions_staging")
+        .select("*")
+        .eq("document_id", document_id)
+        .eq("parser_type", parser_type)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
 
 
 # ── FINAL APPROVAL ──────────────────────────────────────
 
 def insert_uncategorized_transactions(
     document_id: int,
-    user_id: int,
+    user_id: str,
     statement_id: int,
     staging_transaction_id: int,
     transactions: list,
 ):
-    with get_cursor(commit=True) as (conn, cursor):
-        for txn in transactions:
-            cursor.execute("""
-                INSERT INTO uncategorized_transactions
-                (user_id, document_id, statement_id, staging_transaction_id,
-                 txn_date, debit, credit, balance, description, confidence)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                user_id, document_id, statement_id, staging_transaction_id,
-                txn.get("date"), txn.get("debit"), txn.get("credit"),
-                txn.get("balance"), txn.get("details"), txn.get("confidence"),
-            ))
+    sb = get_client()
+    rows = [
+        {
+            "user_id": user_id,
+            "account_id": None,
+            "document_id": document_id,
+            "staging_transaction_id": staging_transaction_id,
+            "txn_date": txn.get("date"),
+            "debit": txn.get("debit"),
+            "credit": txn.get("credit"),
+            "balance": txn.get("balance"),
+            "details": (txn.get("details") or "")[:500],
+        }
+        for txn in transactions
+    ]
+    if rows:
+        sb.table("uncategorized_transactions").insert(rows).execute()
 
-        cursor.execute(
-            "UPDATE documents SET status='APPROVE' WHERE document_id=%s",
-            (document_id,),
-        )
+    sb.table("documents").update({"status": "APPROVE"}).eq("document_id", document_id).execute()

@@ -1,85 +1,121 @@
 """
 backend/auth/utils.py
-Mirrors app.py's auth helpers exactly:
-  - SHA-256 password hashing
-  - JWT token creation / decoding
-  - Looks up `password_hash` column, respects `status='ACTIVE'`
+─────────────────────
+Supabase Auth integration for the FastAPI backend.
+
+  - Registration / login via Supabase Auth (ANON_KEY)
+  - Token validation via supabase.auth.get_user(token)
+    → live network call to Supabase (~100-200ms per request)
+    → automatically detects revoked / expired tokens
 """
-import hashlib
-import datetime
-import uuid
 import sys, os
 import logging
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import jwt, JWTError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRE_HOURS
-from db.connection import get_cursor
+from config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 
 logger = logging.getLogger("ledgerai.auth")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
-def hash_password(password: str) -> str:
-    """SHA-256 – matches app.py exactly."""
-    return hashlib.sha256(password.encode()).hexdigest()
+# ── Supabase client helpers ───────────────────────────────────
+
+def _get_anon_client():
+    """Public client — used for sign_up / sign_in_with_password."""
+    from supabase import create_client
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 
-def create_access_token(user_id: int) -> str:
-    payload = {
-        "user_id": user_id,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=JWT_EXPIRE_HOURS),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+def _get_service_client():
+    """Service-role client — used for admin auth operations (get_user)."""
+    from supabase import create_client
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 
-def decode_token(token: str) -> dict:
-    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+# ── Register / Login ──────────────────────────────────────────
+
+def register_user(email: str, password: str) -> dict:
+    """Register via Supabase Auth. Raises ValueError on failure."""
+    client = _get_anon_client()
+    try:
+        # We include full_name in metadata because the profiles table might have a NOT NULL constraint
+        # and a trigger that fails if it's missing.
+        user_metadata = {"full_name": email.split('@')[0]}
+        response = client.auth.sign_up({
+            "email": email,
+            "password": password,
+            "options": {"data": user_metadata}
+        })
+        if response.user is None:
+            raise ValueError("Registration failed - no user returned by Supabase.")
+        logger.info("Registered user: %s (id=%s)", email, response.user.id)
+        return {"user_id": str(response.user.id), "email": response.user.email}
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error("register_user error: %s: %s", type(e).__name__, e)
+        raise ValueError(f"Registration error: {type(e).__name__}: {e}")
 
 
-def get_user_by_email(email: str) -> dict | None:
-    with get_cursor(dictionary=True) as (_, cursor):
-        cursor.execute(
-            "SELECT * FROM users WHERE email=%s AND status='ACTIVE'",
-            (email,),
-        )
-        return cursor.fetchone()
+def login_user(email: str, password: str) -> dict:
+    """
+    Authenticate via Supabase Auth.
+    Returns {"access_token": str, "user_id": uuid_str} on success.
+    Raises ValueError on failure.
+    """
+    client = _get_anon_client()
+    try:
+        response = client.auth.sign_in_with_password({"email": email, "password": password})
+        if response.session is None:
+            raise ValueError("Login failed - invalid credentials.")
+        logger.info("Login OK: user_id=%s", response.user.id)
+        return {
+            "access_token": response.session.access_token,
+            "user_id": str(response.user.id),
+        }
+    except ValueError:
+        raise
+    except Exception as e:
+        err_msg = str(e).lower()
+        logger.warning("login_user failed: %s: %s", type(e).__name__, e)
+        if any(k in err_msg for k in ["invalid", "credentials", "password", "email",
+                                        "not found", "invalid login", "api key"]):
+            raise ValueError("Invalid email or password.")
+        raise ValueError(f"Authentication error: {type(e).__name__}: {e}")
 
 
-def create_user(email: str, password: str) -> int:
-    pw_hash = hash_password(password)
-    with get_cursor(commit=True) as (_, cursor):
-        cursor.execute(
-            "INSERT INTO users (email, password_hash) VALUES (%s, %s)",
-            (email, pw_hash),
-        )
-        return cursor.lastrowid
+# ── Token verification — live Supabase call ───────────────────
 
+def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+    """
+    FastAPI dependency — verifies the Bearer token by calling
+    supabase.auth.get_user(token) on every request.
 
-def create_session(user_id: int) -> str:
-    token = str(uuid.uuid4())
-    expires_at = datetime.datetime.now() + datetime.timedelta(hours=JWT_EXPIRE_HOURS)
-    with get_cursor(commit=True) as (_, cursor):
-        cursor.execute(
-            "INSERT INTO user_sessions (user_id, token, expires_at) VALUES (%s, %s, %s)",
-            (user_id, token, expires_at),
-        )
-    return token
+    Advantages over local JWT decode:
+      - Automatically rejects revoked / logged-out tokens
+      - Works correctly with any Supabase token type
 
-
-def get_current_user(token: str = Depends(oauth2_scheme)):
+    Tradeoff: ~100-200ms latency per authenticated request.
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = decode_token(token)
-        user_id: int = payload.get("user_id")
-        if user_id is None:
+        # Use service-role client so we can call get_user() as admin
+        client = _get_service_client()
+        response = client.auth.get_user(token)
+        if response is None or response.user is None:
+            logger.warning("get_user() returned no user for token")
             raise credentials_exception
+        user_id = str(response.user.id)
+        logger.debug("get_current_user: verified user_id=%s", user_id)
         return {"user_id": user_id}
-    except JWTError:
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("get_current_user error: %s: %s", type(e).__name__, e)
         raise credentials_exception

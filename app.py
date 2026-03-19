@@ -27,8 +27,6 @@ import tempfile
 import json
 import time
 import pandas as pd
-import hashlib
-import uuid
 import datetime
 
 from services.pdf_service import extract_pages
@@ -53,7 +51,7 @@ from repository.statement_category_repo import (
     update_extraction_logic,
     update_success_rate,
 )
-from db.connection import get_cursor
+from services.auth_service import register_user, login_user
 
 logger = logging.getLogger("ledgerai.app")
 
@@ -70,35 +68,8 @@ if "current_document" not in st.session_state:
 
 
 # ═══════════════════════════════════════════════════════════
-# AUTH HELPERS
+# AUTH HELPERS — handled by Supabase (services/auth_service.py)
 # ═══════════════════════════════════════════════════════════
-
-def hash_password(password: str):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def create_session(user_id):
-    with get_cursor(commit=True) as (conn, cursor):
-        token = str(uuid.uuid4())
-        expires_at = datetime.datetime.now() + datetime.timedelta(hours=12)
-        cursor.execute("""
-            INSERT INTO user_sessions (user_id, token, expires_at)
-            VALUES (%s, %s, %s)
-        """, (user_id, token, expires_at))
-    st.session_state.user_id = user_id
-
-def login_user(email, password):
-    with get_cursor(dictionary=True) as (conn, cursor):
-        cursor.execute(
-            "SELECT * FROM users WHERE email=%s AND status='ACTIVE'",
-            (email,)
-        )
-        user = cursor.fetchone()
-    if not user:
-        return None
-    if user["password_hash"] != hash_password(password):
-        return None
-    create_session(user["user_id"])
-    return user["user_id"]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -117,6 +88,8 @@ def show_login():
         if st.button("Login", key="btn_login"):
             result = login_user(email, password)
             if result:
+                user_id, _ = result
+                st.session_state.user_id = user_id
                 st.session_state.screen = "dashboard"
                 st.rerun()
             else:
@@ -128,14 +101,8 @@ def show_login():
 
         if st.button("Register", key="btn_register"):
             try:
-                pw_hash = hash_password(new_pw)
-                with get_cursor(commit=True) as (conn, cursor):
-                    cursor.execute(
-                        "INSERT INTO users (email, password_hash) VALUES (%s, %s)",
-                        (new_email, pw_hash),
-                    )
-                    user_id = cursor.lastrowid
-                st.success(f"Registered! User ID: {user_id}. Please login.")
+                user_id = register_user(new_email, new_pw)
+                st.success(f"Registered! Please check your email to confirm, then login.")
             except Exception as e:
                 st.error(f"Registration failed: {e}")
 

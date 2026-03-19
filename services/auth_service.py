@@ -1,61 +1,59 @@
 """
 services/auth_service.py
 ────────────────────────
-User authentication and session management.
+User authentication via Supabase Auth (ANON_KEY for client-side auth).
+user_id is a UUID string (Supabase auth.users.id).
 """
 
-import bcrypt
-import uuid
 import logging
-from datetime import datetime, timedelta
-from db.connection import get_cursor
+from config import SUPABASE_URL, SUPABASE_ANON_KEY
 
 logger = logging.getLogger("ledgerai.auth_service")
 
 
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+def _get_auth_client():
+    """Auth operations use the ANON_KEY (public client)."""
+    from supabase import create_client
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 
-def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode(), hashed.encode())
-
-
-def register_user(email: str, password: str) -> int:
-    pw_hash = hash_password(password)
-    with get_cursor(commit=True) as (conn, cursor):
-        cursor.execute(
-            "INSERT INTO users (email, password_hash) VALUES (%s, %s)",
-            (email, pw_hash),
-        )
-        user_id = cursor.lastrowid
-    logger.info("Registered user_id=%s email=%s", user_id, email)
-    return user_id
+def register_user(email: str, password: str) -> str:
+    """
+    Register via Supabase Auth.
+    Returns the new user UUID on success. Raises ValueError on failure.
+    """
+    client = _get_auth_client()
+    try:
+        # Default full_name from email to satisfy profiles table constraints/triggers
+        user_metadata = {"full_name": email.split('@')[0]}
+        response = client.auth.sign_up({
+            "email": email,
+            "password": password,
+            "options": {"data": user_metadata}
+        })
+        if response.user is None:
+            raise ValueError("Registration failed - no user returned by Supabase.")
+        logger.info("Registered user_id=%s email=%s", response.user.id, email)
+        return str(response.user.id)
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error("register_user error: %s: %s", type(e).__name__, e)
+        raise ValueError(f"Registration error: {type(e).__name__}: {e}")
 
 
 def login_user(email: str, password: str):
-    """Returns (user_id, token) on success, None on failure."""
-    with get_cursor(dictionary=True) as (conn, cursor):
-        cursor.execute(
-            "SELECT user_id, password_hash FROM users WHERE email=%s AND status='ACTIVE'",
-            (email,),
-        )
-        user = cursor.fetchone()
-
-    if not user:
+    """
+    Authenticate via Supabase Auth.
+    Returns (user_id_str, access_token) on success, None on failure.
+    """
+    client = _get_auth_client()
+    try:
+        response = client.auth.sign_in_with_password({"email": email, "password": password})
+        if response.session is None:
+            return None
+        logger.info("Login: user_id=%s", response.user.id)
+        return str(response.user.id), response.session.access_token
+    except Exception as e:
+        logger.warning("Login failed: %s: %s", type(e).__name__, e)
         return None
-
-    if not verify_password(password, user["password_hash"]):
-        return None
-
-    token = str(uuid.uuid4())
-    expires_at = datetime.now() + timedelta(hours=12)
-
-    with get_cursor(commit=True) as (conn, cursor):
-        cursor.execute(
-            "INSERT INTO user_sessions (user_id, token, expires_at) VALUES (%s, %s, %s)",
-            (user["user_id"], token, expires_at),
-        )
-
-    logger.info("Login: user_id=%s", user["user_id"])
-    return user["user_id"], token

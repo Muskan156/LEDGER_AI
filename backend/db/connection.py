@@ -1,50 +1,32 @@
 """
 backend/db/connection.py
-MySQL connection pool – mirrors app.py's `get_cursor` pattern.
+────────────────────────
+Supabase client singleton for database access (backend process).
+
+Uses SUPABASE_SERVICE_ROLE_KEY so all server-side operations
+bypass Row Level Security (RLS) — correct for backend services.
 """
-import mysql.connector
-from mysql.connector import pooling
-from contextlib import contextmanager
+
+from supabase import create_client, Client
 import logging
 import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from config import DB_CONFIG
+from config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
 logger = logging.getLogger("ledgerai.db")
-_pool = None
+
+_client: Client | None = None
 
 
-def _get_pool():
-    global _pool
-    if _pool is None:
-        _pool = pooling.MySQLConnectionPool(
-            pool_name="ledgerai_pool",
-            pool_size=10,
-            pool_reset_session=True,
-            **DB_CONFIG,
-        )
-        logger.info("DB pool created.")
-    return _pool
-
-
-@contextmanager
-def get_cursor(dictionary=False, commit=False, prepared=False):
-    conn = cursor = None
-    try:
-        conn   = _get_pool().get_connection()
-        cursor = conn.cursor(dictionary=dictionary, prepared=prepared)
-        yield conn, cursor
-        if commit:
-            conn.commit()
-    except Exception:
-        if conn and conn.is_connected():
-            conn.rollback()
-        raise
-    finally:
-        if cursor:
-            try: cursor.close()
-            except: pass
-        if conn and conn.is_connected():
-            try: conn.close()
-            except: pass
+def get_client() -> Client:
+    """Return the singleton Supabase service-role client."""
+    global _client
+    if _client is None:
+        if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+            raise RuntimeError(
+                "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env"
+            )
+        _client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        logger.info("Supabase service-role client initialised.")
+    return _client

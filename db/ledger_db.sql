@@ -34,23 +34,7 @@ CREATE TABLE account_groups (
     updated_by BIGINT NULL,
     FOREIGN KEY (parent_group_id) REFERENCES account_groups(account_group_id)
 );
-select * from account_groups;
-INSERT INTO account_groups (
-    group_name,
-    parent_group_id,
-    balance_nature,
-    is_profit_loss,
-    is_active,
-    created_by
-)
-VALUES (
-    'Bank Accounts',
-    NULL,
-    'DEBIT',
-    FALSE,
-    TRUE,
-    3
-);
+
 CREATE TABLE user_sessions(
     session_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -71,24 +55,7 @@ CREATE TABLE accounts (
     FOREIGN KEY (user_id) REFERENCES users(user_id),
     FOREIGN KEY (account_group_id) REFERENCES account_groups(account_group_id)
 );
-INSERT INTO accounts (
-    user_id,
-    account_group_id,
-    account_name,
-    balance_nature,
-    is_profit_loss,
-    is_system_generated,
-    is_active
-)
-VALUES (
-    3,
-    1,   
-    'SBI Savings Account - 9589',
-    'DEBIT',
-    FALSE,
-    FALSE,
-    TRUE
-);
+
 CREATE TABLE profession_account_templates (
     template_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     profession_id BIGINT NOT NULL,

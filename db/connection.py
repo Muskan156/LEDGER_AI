@@ -1,67 +1,35 @@
 """
 db/connection.py
 ────────────────
-Centralised database connection management with pooling.
+Supabase client singleton for database access.
+
+Uses SUPABASE_SERVICE_ROLE_KEY so all server-side operations
+bypass Row Level Security (RLS) — correct for backend services.
+
+Usage (anywhere in the codebase):
+    from db.connection import get_client
+    sb = get_client()
+    result = sb.table("documents").select("*").eq("document_id", 1).execute()
+    rows = result.data  # list[dict]
 """
 
-import mysql.connector
-from mysql.connector import pooling
-from contextlib import contextmanager
-from config import DB_CONFIG
+from supabase import create_client, Client
+from config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 import logging
 
 logger = logging.getLogger("ledgerai.db")
 
-_pool = None
+_client: Client | None = None
 
 
-def _get_pool():
-    global _pool
-    if _pool is None:
-        _pool = pooling.MySQLConnectionPool(
-            pool_name="ledgerai_pool",
-            pool_size=10,
-            pool_reset_session=True,
-            **DB_CONFIG,
-        )
-        logger.info("Database connection pool created (size=10).")
-    return _pool
-
-
-@contextmanager
-def get_cursor(dictionary=False, commit=False, prepared=False):
-    """
-    Yields (conn, cursor). Auto-commits on success if commit=True,
-    rolls back on error, and always returns connection to pool.
-    """
-    conn = None
-    cursor = None
-    try:
-        conn = _get_pool().get_connection()
-        cursor = conn.cursor(dictionary=dictionary, prepared=prepared)
-        yield conn, cursor
-        if commit:
-            conn.commit()
-    except Exception:
-        if conn and conn.is_connected():
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-        raise
-    finally:
-        if cursor:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-        if conn and conn.is_connected():
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def get_connection():
-    """Backward-compatible. Prefer get_cursor()."""
-    return _get_pool().get_connection()
+def get_client() -> Client:
+    """Return the singleton Supabase service-role client."""
+    global _client
+    if _client is None:
+        if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+            raise RuntimeError(
+                "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env"
+            )
+        _client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        logger.info("Supabase service-role client initialised.")
+    return _client

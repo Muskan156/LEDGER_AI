@@ -1,13 +1,12 @@
 """
 services/review_service.py
 ──────────────────────────
-Handles the human review screen data layer.
-The review engine logic is in processing_engine.py now.
+Handles the human review screen data layer using the Supabase client.
+user_id is a UUID string (Supabase auth.users.id).
 """
 
-import json
 import logging
-from db.connection import get_cursor
+from db.connection import get_client
 from repository.document_repo import (
     get_review_transactions,
     insert_uncategorized_transactions,
@@ -18,29 +17,36 @@ from repository.document_repo import (
 logger = logging.getLogger("ledgerai.review_service")
 
 
-def get_document_for_review(document_id: int) -> dict:
+def get_document_for_review(document_id: int) -> dict | None:
     """
     Fetch all data needed for the review screen.
     Returns dict with document info + transactions.
     """
-    with get_cursor(dictionary=True) as (conn, cursor):
-        # Get document
-        cursor.execute("SELECT * FROM documents WHERE document_id=%s", (document_id,))
-        doc = cursor.fetchone()
-        if not doc:
-            return None
+    sb = get_client()
 
-        # Get both CODE and LLM staging rows
-        cursor.execute("""
-            SELECT staging_transaction_id, parser_type,
-                   transaction_json, overall_confidence
-            FROM ai_transactions_staging
-            WHERE document_id=%s
-            ORDER BY parser_type
-        """, (document_id,))
-        staging_rows = cursor.fetchall()
+    # Get document with joined institution name
+    doc_result = (
+        sb.table("documents")
+        .select("*, statement_categories(institution_name, statement_identifier)")
+        .eq("document_id", document_id)
+        .maybe_single()
+        .execute()
+    )
+    if not doc_result.data:
+        return None
 
-    # Parse JSON
+    doc = doc_result.data
+
+    # Get both CODE and LLM staging rows
+    staging_result = (
+        sb.table("ai_transactions_staging")
+        .select("staging_transaction_id, parser_type, transaction_json, overall_confidence")
+        .eq("document_id", document_id)
+        .order("parser_type")
+        .execute()
+    )
+    staging_rows = staging_result.data or []
+
     code_txns = []
     llm_txns = []
     code_staging_id = None
@@ -49,6 +55,7 @@ def get_document_for_review(document_id: int) -> dict:
     for row in staging_rows:
         txn_data = row["transaction_json"]
         if isinstance(txn_data, str):
+            import json
             txn_data = json.loads(txn_data)
 
         if row["parser_type"] == "CODE":
@@ -70,7 +77,7 @@ def get_document_for_review(document_id: int) -> dict:
 
 def approve_transactions(
     document_id: int,
-    user_id: int,
+    user_id: str,
     statement_id: int,
     staging_transaction_id: int,
     transactions: list,
@@ -84,5 +91,4 @@ def approve_transactions(
         transactions=transactions,
     )
     insert_audit(document_id, "APPROVE")
-    logger.info("Approved %d transactions for document_id=%s.",
-                len(transactions), document_id)
+    logger.info("Approved %d transactions for document_id=%s.", len(transactions), document_id)

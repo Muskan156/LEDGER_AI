@@ -23,9 +23,46 @@ export default function UploadPage() {
     const [status, setStatus] = useState("IDLE");
     // IDLE → DETECTING → DETECTED → PASSWORD_REQUIRED → UPLOADING → PROCESSING → DONE → ERROR
     const [processingStatus, setProcessingStatus] = useState("");
+    const [secondsElapsed, setSecondsElapsed] = useState(0);
+    const [currentTipIdx, setCurrentTipIdx] = useState(0);
     const [error, setError] = useState("");
     const [documentId, setDocumentId] = useState(null);
     const fileInputRef = useRef(null);
+
+    const tips = [
+        "Analyzing bank headers and layout...",
+        "Identifying transaction columns...",
+        "Validating dates and currencies...",
+        "Running Code-based parsing...",
+        "Verifying with AI (Gemini Flash)...",
+        "Refining transaction categories...",
+        "Optimizing data for review...",
+        "Almost there, finalizing format..."
+    ];
+
+    // Ticker for tips
+    useEffect(() => {
+        let interval;
+        if (status === "PROCESSING" || status === "UPLOADING") {
+            interval = setInterval(() => {
+                setCurrentTipIdx(prev => (prev + 1) % tips.length);
+            }, 5000);
+        }
+        return () => clearInterval(interval);
+    }, [status]);
+
+    // Timer for processing
+    useEffect(() => {
+        let interval;
+        if (status === "PROCESSING" || status === "UPLOADING") {
+            interval = setInterval(() => {
+                setSecondsElapsed(prev => prev + 1);
+            }, 1000);
+        } else {
+            setSecondsElapsed(0);
+        }
+        return () => clearInterval(interval);
+    }, [status]);
 
     const steps = [
         {
@@ -239,19 +276,61 @@ export default function UploadPage() {
                                     );
                                 })}
                             </div>
-                            {/* Processing substatus banner */}
-                            {isProcessing && getProcessingSubtext() && (
-                                <div style={{
-                                    padding: '0.75rem 1rem', borderRadius: '8px',
-                                    background: 'linear-gradient(135deg, #f0eeff, #e8e4ff)',
-                                    border: '1px solid #d8d4f0', marginBottom: '1rem',
-                                    display: 'flex', alignItems: 'center', gap: '0.75rem'
-                                }}>
-                                    <Loader2 size={14} className="spin-icon" style={{ color: '#483EA8' }} />
-                                    <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#483EA8' }}>
-                                        {getProcessingSubtext()}
-                                    </span>
-                                </div>
+                            {/* Enhanced Processing Banner */}
+                            {isProcessing && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: 5 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    style={{
+                                        padding: '1rem',
+                                        borderRadius: '12px',
+                                        background: 'linear-gradient(135deg, #f0eeff 0%, #e8e4ff 100%)',
+                                        border: '1px solid #d8d4f0',
+                                        marginBottom: '1rem',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: '0.25rem'
+                                    }}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                                            <Loader2 size={16} className="spin-icon" style={{ color: '#483EA8' }} />
+                                            <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#483EA8' }}>
+                                                {getProcessingSubtext() || "Processing Document"}
+                                            </span>
+                                        </div>
+                                        <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#483EA8', background: 'rgba(72, 62, 168, 0.12)', padding: '2px 8px', borderRadius: '4px' }}>
+                                            {secondsElapsed}s
+                                        </span>
+                                    </div>
+
+                                    {/* Animated Tip Ticker */}
+                                    <div style={{
+                                        marginTop: '0.5rem',
+                                        fontSize: '0.75rem',
+                                        color: '#6366f1',
+                                        fontWeight: 500,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '6px'
+                                    }}>
+                                        <div style={{ width: 4, height: 4, borderRadius: '50%', background: '#6366f1' }} />
+                                        <AnimatePresence mode="wait">
+                                            <motion.span
+                                                key={currentTipIdx}
+                                                initial={{ opacity: 0, x: 5 }}
+                                                animate={{ opacity: 1, x: 0 }}
+                                                exit={{ opacity: 0, x: -5 }}
+                                                transition={{ duration: 0.3 }}
+                                            >
+                                                {tips[currentTipIdx]}
+                                            </motion.span>
+                                        </AnimatePresence>
+                                    </div>
+                                    <div style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+                                        Estimated time: 15-30 seconds
+                                    </div>
+                                </motion.div>
                             )}
                         </div>
                     )}
