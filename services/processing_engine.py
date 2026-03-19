@@ -202,29 +202,8 @@ def process_document(document_id: int):
                     update_statement_status(statement_id, "UNDER_REVIEW")
                     # Fall through to dual pipeline below
 
-            # ── CASE A2 — EXPERIMENTAL → LLM ONLY ──
-            elif statement_status == "EXPERIMENTAL":
-                logger.info("")
-                logger.info("[STEP 4/5] EXPERIMENTAL format — LLM extraction only...")
-
-                llm_response = parse_with_llm(full_text, identity_json)
-                llm_txns     = extract_json_from_response(llm_response)
-                logger.info("LLM extracted %d transactions", len(llm_txns))
-
-                logger.info("[STEP 5/5] PIPELINE COMPLETE — LLM (EXPERIMENTAL path)")
-                update_processing_complete(document_id, "LLM")
-                insert_staging_transactions(
-                    document_id=document_id, user_id=user_id,
-                    code_txns=[], llm_txns=llm_txns,
-                    code_confidence=0.0, llm_confidence=0.85,
-                )
-                update_document_status(document_id, "AWAITING_REVIEW")
-                insert_audit(document_id, "COMPLETED")
-                logger.info("═" * 70)
-                return  # ← EXIT
-
-            # ── CASE A3 — UNDER_REVIEW → Fall through to dual pipeline ──
-            logger.info("UNDER_REVIEW format — continuing to dual pipeline...")
+            # ── CASE A2 — UNDER_REVIEW / EXPERIMENTAL → Fall through to dual pipeline ──
+            logger.info("Format status is %s — continuing to dual pipeline...", statement_status)
 
         # ═══════════════════════════════════════════════════
         # CASE B — NEW FORMAT → CLASSIFY + GENERATE

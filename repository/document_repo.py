@@ -34,7 +34,9 @@ def get_document_password(document_id: int) -> str | None:
         .maybe_single()
         .execute()
     )
-    return result.data["encrypted_password"] if result.data else None
+    if result is None or not result.data:
+        return None
+    return result.data.get("encrypted_password")
 
 
 # ── STATUS UPDATES ───────────────────────────────────────
