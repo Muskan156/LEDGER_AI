@@ -7,10 +7,10 @@ import logging
 import os
 import sys
 
-# ── Add project root to sys.path so services/ is importable from backend/ ──
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _project_root not in sys.path:
-    sys.path.append(_project_root)
+# ── Add backend directory to sys.path so services/ is importable from backend/ ──
+_backend_root = os.path.dirname(os.path.abspath(__file__))
+if _backend_root not in sys.path:
+    sys.path.append(_backend_root)
 
 
 # ── Configure logging BEFORE any imports that create loggers ──

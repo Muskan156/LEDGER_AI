@@ -195,9 +195,9 @@ async def upload_and_process(
     Returns the document_id immediately; processing runs in background.
     """
     import sys
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+    backend_root = os.path.dirname(os.path.dirname(__file__))
+    if backend_root not in sys.path:
+        sys.path.insert(0, backend_root)
 
     user_id = user["user_id"]
 
