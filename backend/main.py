@@ -34,7 +34,7 @@ app = FastAPI(title="LedgerAI API", version="1.0.0")
 # ── CORS ─────────────────────────────────────────────────────
 origins = [
     "http://localhost:5173",   # local dev
-    "https://ledger-ai-1l7u.vercel.app"  
+    "https://ledger-ai-j5ii.vercel.app"  
 ]
 
 app.add_middleware(
