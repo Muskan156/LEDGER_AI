@@ -12,3 +12,4 @@ opencv-python
 fastapi
 uvicorn[standard]
 httpx
+email-validator
