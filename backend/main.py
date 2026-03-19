@@ -31,9 +31,15 @@ from api.document_routes import router as document_router
 app = FastAPI(title="LedgerAI API", version="1.0.0")
 
 # ── CORS ─────────────────────────────────────────────────────
+# ── CORS ─────────────────────────────────────────────────────
+origins = [
+    "http://localhost:5173",   # local dev
+    "https://ledger-ai-1l7u.vercel.app"  
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,   # 👈 changed from ["*"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -80,3 +86,7 @@ def health():
         SUPABASE_SERVICE_ROLE_KEY and len(SUPABASE_SERVICE_ROLE_KEY) > 20,
     ])
     return {"status": "ok", "supabase_configured": configured}
+
+@app.get("/")
+def root():
+    return {"message": "LedgerAI backend running"}
