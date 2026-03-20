@@ -54,7 +54,7 @@ RULES
    - Example GOOD: "NEFT CR ACME CORP SALARY"
    - Example BAD: "01/01/2025 NEFT CR ACME CORP 50000.00 Page 1 of 3"
 4. Handle Indian number formats (1,00,000.00).
-5. Normalize dates to DD/MM/YYYY.
+5. Normalize dates to YYYY-MM-DD.
 6. DEBIT/CREDIT: Every transaction MUST have either debit or credit filled (not both None).
    - If running balance increases, the amount is credit.
    - If running balance decreases, the amount is debit.
@@ -67,7 +67,7 @@ OUTPUT FORMAT (JSON ARRAY)
 
 [
   {{
-    "date": "DD/MM/YYYY",
+    "date": "YYYY-MM-DD",
     "details": "<transaction description only, no dates/amounts/noise>",
     "debit": <float or null>,
     "credit": <float or null>,

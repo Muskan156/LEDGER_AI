@@ -78,7 +78,7 @@ def extract_transactions(text: str) -> list:
     \"\"\"
     Returns list of dicts — one per transaction, in document order:
     {{
-        "date"      : str,          # DD/MM/YYYY — zero-padded, 4-digit year
+        "date"      : str,          # YYYY-MM-DD — zero-padded, 4-digit year
         "details"   : str,          # narration exactly as it appears
                                     # do not add or remove words
         "debit"     : float | None, # money out — None if this row is a credit
@@ -100,7 +100,7 @@ RULES
   means that cell is empty — treat it as None, not 0.0.
 - Strip ₹, Rs., INR and commas from amounts before converting to float.
 - Dates may appear as DD/MM/YY, DD/MM/YYYY, DD-MM-YYYY, DD MMM YYYY.
-  Always output as DD/MM/YYYY with 4-digit year.
+  Always output as YYYY-MM-DD with 4-digit year.
 - Deduplicate on (date, details, debit, credit) — keep first occurrence.
 - Skip rows whose narration is exactly "Opening Balance", "Closing Balance",
   "Grand Total", or "GRAND TOTAL".
