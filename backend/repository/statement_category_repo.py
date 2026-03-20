@@ -118,3 +118,41 @@ def update_success_rate(statement_id: int, rate: float):
         "success_rate": rate,
         "last_verified_at": datetime.datetime.utcnow().isoformat(),
     }).eq("statement_id", statement_id).execute()
+
+
+def get_formats_by_institution(
+    normalised_institution_name: str,
+    document_family: str,
+) -> list:
+    """
+    Fetch all statement_categories rows that share the same normalised
+    institution name AND document family.
+ 
+    Used by _find_duplicate_format() to detect duplicate formats before
+    inserting a new row into statement_categories.
+ 
+    Args:
+        normalised_institution_name: UPPERCASE normalised name, e.g. "HDFC BANK"
+        document_family: e.g. "BANK_ACCOUNT_STATEMENT"
+ 
+    Returns:
+        List of row dicts (may be empty). Each dict contains at minimum:
+        statement_id, institution_name, format_name, statement_identifier,
+        status, match_threshold.
+    """
+    from db.connection import get_client
+    sb = get_client()
+ 
+    result = (
+        sb.table("statement_categories")
+        .select(
+            "statement_id, institution_name, format_name, "
+            "statement_identifier, status, match_threshold"
+        )
+        # institution_name is stored UPPERCASE — ilike handles any residual
+        # case inconsistency in existing rows gracefully.
+        .ilike("institution_name", normalised_institution_name)
+        .eq("document_family", document_family)
+        .execute()
+    )
+    return result.data or []

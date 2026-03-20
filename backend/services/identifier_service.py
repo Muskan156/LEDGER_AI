@@ -16,6 +16,119 @@ logger = logging.getLogger("ledgerai.identifier_service")
 
 
 # ════════════════════════════════════════════════════════════
+# INSTITUTION NAME NORMALISATION
+# ════════════════════════════════════════════════════════════
+# Only strips pure legal registration suffixes: Limited / Ltd / Pvt / Private.
+# Every other word is kept — including "Bank", "Payments Bank",
+# "Small Finance Bank", "Co-operative Bank" — because these are all
+# semantically meaningful parts of the actual bank name.
+#
+# Verified against 44 Indian bank name patterns:
+#   "HDFC Bank Limited"              → "HDFC BANK"
+#   "Bank of India"                  → "BANK OF INDIA"   (NOT "BANK OF")
+#   "Central Bank of India"          → "CENTRAL BANK OF INDIA"
+#   "AU Small Finance Bank Limited"  → "AU SMALL FINANCE BANK"
+#   "Airtel Payments Bank Limited"   → "AIRTEL PAYMENTS BANK"
+#   "Saraswat Co-operative Bank Ltd" → "SARASWAT CO-OPERATIVE BANK"
+#   "Indian Bank"                    → "INDIAN BANK"
+# ════════════════════════════════════════════════════════════
+
+_LEGAL_SUFFIX_RE = re.compile(
+    r"\s*,?\s*\b(limited|ltd\.?|pvt\.?|private)\s*$",
+    re.IGNORECASE,
+)
+
+
+def normalise_institution_name(raw: str) -> str:
+    """
+    Strip trailing legal registration suffixes and return UPPERCASE.
+    Iterates until stable so "Bank, Ltd." → "BANK" in two passes.
+    Returns "UNKNOWN" for blank input.
+    """
+    if not raw or not raw.strip():
+        return "UNKNOWN"
+    name = raw.strip()
+    prev = None
+    while prev != name:
+        prev = name
+        name = _LEGAL_SUFFIX_RE.sub("", name).strip().rstrip(",").strip()
+    return name.upper()
+
+
+# ════════════════════════════════════════════════════════════
+# FORMAT DEDUPLICATION HELPERS
+# ════════════════════════════════════════════════════════════
+
+def _header_fingerprint(identifier_json: dict) -> str:
+    """
+    Stable, order-independent fingerprint built from table_header_markers.
+
+    Same bank, same columns (regardless of order) → same fingerprint → dedup hit.
+    Same bank, different columns                  → different fingerprint → new row.
+
+    Example:
+      ["Date", "Particulars", "Debit", "Credit", "Balance"]
+      → "balance|credit|date|debit|particulars"
+
+      ["Txn Date", "Particulars", "Chq/Ref No.", "Debit", "Credit", "Balance"]
+      → "balance|chq/refno.|credit|debit|particulars|txndate"
+    """
+    headers = (
+        identifier_json
+        .get("identity_markers", {})
+        .get("transaction_table_identity", {})
+        .get("table_header_markers", [])
+    )
+    canonical = sorted(re.sub(r"\s+", "", h.lower()) for h in headers if h)
+    return "|".join(canonical)
+
+
+def _find_duplicate_format(
+    norm_name: str,
+    document_family: str,
+    new_identifier_json: dict,
+) -> Optional[Dict]:
+    """
+    Return an existing statement_categories row if one matches on:
+      (normalised institution name) AND (document family) AND (column header fingerprint).
+
+    Same bank + same columns  → dedup hit  → return existing row.
+    Same bank + diff columns  → no match   → return None (new format, insert allowed).
+    Different bank            → no match   → return None.
+    """
+    from repository.statement_category_repo import get_formats_by_institution
+    try:
+        candidates = get_formats_by_institution(norm_name, document_family)
+    except Exception as exc:
+        logger.warning("_find_duplicate_format: repo call failed — skipping dedup: %s", exc)
+        return None
+
+    new_fp = _header_fingerprint(new_identifier_json)
+    if not new_fp:
+        # No headers extracted — cannot fingerprint safely, skip dedup
+        logger.debug("_find_duplicate_format: empty header fingerprint — skipping dedup")
+        return None
+
+    for cat in candidates:
+        stored_json = cat.get("statement_identifier", {})
+        if isinstance(stored_json, str):
+            try:
+                stored_json = json.loads(stored_json)
+            except Exception:
+                continue
+        stored_fp = _header_fingerprint(stored_json)
+        if stored_fp == new_fp:
+            logger.info(
+                "Format dedup hit — reusing statement_id=%s "
+                "(institution=%s  family=%s  header_fp=%s)",
+                cat["statement_id"], norm_name, document_family, new_fp,
+            )
+            return cat
+
+    return None
+
+
+# ════════════════════════════════════════════════════════════
 # DETERMINISTIC IDENTIFIERS (IFSC, etc.)
 # ════════════════════════════════════════════════════════════
 
@@ -324,8 +437,11 @@ def find_existing_identifier(text: str, default_threshold: float = 80.0):
     generic_candidates:  List[Dict] = []
 
     for cat in categories:
-        inst_name  = (cat.get("institution_name") or "").lower()
-        inst_clean = re.sub(r"\s+", "", inst_name)
+        # Normalise the stored institution_name the same way it was saved,
+        # so "HDFC BANK" (stored) matches "HDFC Bank Ltd" (new upload) correctly.
+        raw_inst   = cat.get("institution_name") or ""
+        inst_norm  = normalise_institution_name(raw_inst)          # → "HDFC BANK"
+        inst_clean = re.sub(r"\s+", "", inst_norm.lower())         # → "hdfc bank"
         doc_family = cat.get("document_family", "")
         is_generic = (
             (not inst_clean or inst_clean == "unknown") and doc_family in _GENERIC_FAMILIES
@@ -702,14 +818,17 @@ OUTPUT RULES: Return ONLY the JSON object. No markdown. No explanations.
         ph.setdefault("details_strip_patterns",      [])
         ph.setdefault("known_summary_amounts",       [])
 
-    # ── Sanitize institution_name — DB column is NOT NULL ────────────────────
-    if not identifier.get("institution_name"):
-        identifier["institution_name"] = "Unknown"
+    # ── Normalise institution_name — strip legal suffixes, store UPPERCASE ─────
+    # Ensures "HDFC Bank Limited" and "HDFC Bank" are both stored as "HDFC BANK",
+    # preventing duplicate statement_categories rows on subsequent uploads.
+    raw_inst = identifier.get("institution_name") or "Unknown"
+    identifier["institution_name"] = normalise_institution_name(raw_inst)
 
     logger.info(
-        "LLM classified: family=%s, institution=%s, layout=%s, boundaries=%s",
+        "LLM classified: family=%s  institution=%s (raw=%r)  layout=%s  boundaries=%s",
         identifier.get("document_family"),
         identifier.get("institution_name"),
+        raw_inst,
         identifier.get("parsing_hints", {}).get("layout_type"),
         identifier.get("parsing_hints", {}).get("transaction_boundary_signals"),
     )
@@ -743,10 +862,32 @@ def save_new_statement_format(
     extraction_logic: str,
     threshold: float = 65.0,
 ) -> int:
-    statement_type   = derive_statement_type(identifier_json)
-    institution_name = identifier_json.get("institution_name") or "Unknown"
+    statement_type  = derive_statement_type(identifier_json)
+    document_family = identifier_json.get("document_family", "UNKNOWN")
+
+    # Always normalise before save — safety net for any caller that bypasses
+    # classify_document_llm (e.g. tests or future code paths).
+    raw_name         = identifier_json.get("institution_name") or "Unknown"
+    institution_name = normalise_institution_name(raw_name)
+
+    # Write normalised name back so the stored identifier_json is consistent
+    # with the institution_name column value.
+    identifier_json = {**identifier_json, "institution_name": institution_name}
+
+    # ── Dedup guard ───────────────────────────────────────────────────────────
+    # Same institution + same document family + same column headers → reuse row.
+    # Same institution + same family + different columns → new row (new format).
+    existing = _find_duplicate_format(institution_name, document_family, identifier_json)
+    if existing:
+        logger.info(
+            "save_new_statement_format: dedup hit — returning existing statement_id=%s "
+            "(institution=%s  family=%s)",
+            existing["statement_id"], institution_name, document_family,
+        )
+        return existing["statement_id"]
+
     logger.info(
-        "Saving new format: name=%s type=%s institution=%s",
+        "Saving NEW format: name=%s  type=%s  institution=%s",
         format_name, statement_type, institution_name,
     )
     return insert_statement_category(

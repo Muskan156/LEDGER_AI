@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, Depends
+from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 import os
 import shutil
@@ -11,6 +12,7 @@ import uuid
 import hashlib
 from typing import Optional
 from db.connection import get_client
+from services.account_detector import detect_accounts, create_account_from_detection
 from auth.utils import get_current_user
 
 logger = logging.getLogger("ledgerai.document_routes")
@@ -18,6 +20,22 @@ logger = logging.getLogger("ledgerai.document_routes")
 router = APIRouter()
 
 SUPABASE_STORAGE_BUCKET = "financial_document_uploads"  # Change this to your actual bucket name
+
+# ── Transaction row validator ─────────────────────────────────────────────────
+import re as _re
+_DATE_RE = _re.compile(
+    r"^\s*("
+    r"\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}"
+    r"|\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}"
+    r"|\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4}"
+    r")\s*$"
+)
+
+def _is_valid_transaction(txn: dict) -> bool:
+    date_val = txn.get("date")
+    if not date_val:
+        return False
+    return bool(_DATE_RE.match(str(date_val).strip()))
 
 
 def _is_password_exception(exc: Exception) -> bool:
@@ -409,15 +427,45 @@ async def get_document_review(document_id: int, user=Depends(get_current_user)):
             llm_txns = txn_data
 
     cat = doc.pop("statement_categories", None) or {}
-    bank_name = cat.get("institution_name") or "Pending Identification"
+    bank_name  = cat.get("institution_name") or "Pending Identification"
     ident_json = cat.get("statement_identifier")
 
+    # ── Fetch account detection results for this document ────────────────────
+    account_info = []
+    try:
+        match_rows = (
+            sb.table("document_account_match_log")
+            .select(
+                "detected_institution, detected_account_last4, "
+                "matched_account_id, match_status"
+            )
+            .eq("document_id", document_id)
+            .execute()
+        ).data or []
+
+        for row in match_rows:
+            entry = {
+                "institution_name":      row.get("detected_institution") or bank_name,
+                "account_number_last4":  row.get("detected_account_last4"),
+                "existing_account_id":   row.get("matched_account_id"),
+                "is_new_account":        row.get("match_status") == "NEW",
+                "account_number_masked": (
+                    "X" * 6 + row["detected_account_last4"]
+                    if row.get("detected_account_last4") else None
+                ),
+            }
+            account_info.append(entry)
+    except Exception as _e:
+        logger.warning("get_document_review: failed to fetch account_info: %s", _e)
+
     return {
-        "bank_name": bank_name,
-        "identifier_json": ident_json,
+        "bank_name":         bank_name,
+        "identifier_json":   ident_json,
         "code_transactions": code_txns,
-        "llm_transactions": llm_txns,
-        "status": doc["status"],
+        "llm_transactions":  llm_txns,
+        "status":            doc["status"],
+        "account_info":      account_info,
+        "transaction_parsed_type": doc.get("transaction_parsed_type"),
     }
 
 
@@ -428,7 +476,7 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
 
     doc_result = (
         sb.table("documents")
-        .select("document_id, status, statement_id")
+        .select("document_id, status, statement_id, transaction_parsed_type, account_id")
         .eq("document_id", document_id)
         .eq("user_id", user_id)
         .maybe_single()
@@ -452,18 +500,30 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
     if not staging_rows:
         raise HTTPException(status_code=400, detail="No staging transactions to approve")
 
-    # Prefer CODE over LLM
-    chosen_row = next((r for r in staging_rows if r["parser_type"] == "CODE"), staging_rows[0])
+    preferred_parser = doc.get("transaction_parsed_type") or "LLM"
+    chosen_row = next(
+        (r for r in staging_rows if r["parser_type"] == preferred_parser),
+        staging_rows[0],
+    )
+    logger.info("Approve doc=%s: preferred_parser=%s  chosen=%s",
+                document_id, preferred_parser, chosen_row["parser_type"])
     staging_id = chosen_row["staging_transaction_id"]
     txn_data = chosen_row["transaction_json"]
     if isinstance(txn_data, str):
         txn_data = json.loads(txn_data)
 
-    # Insert into uncategorized_transactions
+    clean_txns = [t for t in txn_data if _is_valid_transaction(t)]
+    skipped = len(txn_data) - len(clean_txns)
+    if skipped:
+        logger.warning("Approve doc=%s — skipped %d junk row(s): %s",
+                       document_id, skipped,
+                       [t.get("date") for t in txn_data if not _is_valid_transaction(t)])
+    account_id = doc.get("account_id")
+
     rows = [
         {
             "user_id": user_id,
-            "account_id": None,
+            "account_id": account_id,
             "document_id": document_id,
             "staging_transaction_id": staging_id,
             "txn_date": txn.get("date"),
@@ -472,7 +532,7 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
             "balance": txn.get("balance"),
             "details": (txn.get("details") or "")[:500],
         }
-        for txn in txn_data
+        for txn in clean_txns
     ]
     if rows:
         sb.table("uncategorized_transactions").insert(rows).execute()
@@ -480,8 +540,158 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
     sb.table("documents").update({"status": "APPROVE"}).eq("document_id", document_id).execute()
 
     inserted = len(rows)
-    logger.info("Document %s approved by user %s — %d transactions saved", document_id, user_id, inserted)
+    logger.info("✅ Document %s approved by user %s — %d txns saved (parser=%s, junk_skipped=%d)",
+                document_id, user_id, inserted, chosen_row["parser_type"], skipped)
     return {"message": "Document approved", "inserted": inserted}
+
+
+@router.get("/{document_id}/account-info")
+async def get_account_info(document_id: int, user=Depends(get_current_user)):
+    """
+    Return detected account info for this document.
+    Called by the Review screen to show the account banner.
+    """
+    user_id = user["user_id"]
+    sb = get_client()
+
+    # Verify document belongs to this user
+    doc = (
+        sb.table("documents")
+        .select("document_id, account_id")
+        .eq("document_id", document_id)
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    ).data
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    match_rows = (
+        sb.table("document_account_match_log")
+        .select(
+            "detected_institution, detected_account_last4, "
+            "matched_account_id, match_status"
+        )
+        .eq("document_id", document_id)
+        .execute()
+    ).data or []
+
+    accounts = []
+    for row in match_rows:
+        last4 = row.get("detected_account_last4")
+        accounts.append({
+            "institution_name":      row.get("detected_institution"),
+            "account_number_last4":  last4,
+            "account_number_masked": ("X" * 6 + last4) if last4 else None,
+            "existing_account_id":   row.get("matched_account_id"),
+            "is_new_account":        row.get("match_status") == "NEW",
+        })
+
+    return {"accounts": accounts}
+
+
+class ConfirmAccountRequest(BaseModel):
+    save: bool
+    accounts: list
+
+
+@router.post("/{document_id}/confirm-account")
+async def confirm_account(
+    document_id: int,
+    body: ConfirmAccountRequest,
+    user=Depends(get_current_user),
+):
+    """
+    Called when user clicks Save or Skip on the account banner.
+
+    save=True  → create account rows, link documents.account_id
+    save=False → leave documents.account_id NULL (user skipped)
+    """
+    user_id = user["user_id"]
+    sb = get_client()
+
+    # Verify document belongs to this user
+    doc = (
+        sb.table("documents")
+        .select("document_id, account_id")
+        .eq("document_id", document_id)
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    ).data
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not body.save:
+        # User clicked Skip for this specific account — record it, nothing else
+        logger.info("confirm_account: user skipped for doc=%s", document_id)
+        if body.accounts:
+            acct = body.accounts[0]
+            last4 = acct.get("account_number_last4") or acct.get("card_last4")
+            try:
+                sb.table("document_account_match_log").update(
+                    {"match_status": "SKIPPED"}
+                ).eq("document_id", document_id).eq(
+                    "detected_account_last4", last4
+                ).execute()
+            except Exception:
+                pass  # non-fatal
+        return {"message": "Skipped", "accounts_saved": 0}
+
+    saved_ids = []
+    first_account_id = None
+
+    for acct_data in body.accounts:
+        # Existing account — link document if account_id not yet set
+        if acct_data.get("existing_account_id"):
+            if first_account_id is None:
+                first_account_id = acct_data["existing_account_id"]
+            continue
+
+        # New account — create it
+        try:
+            new_id = create_account_from_detection(user_id, acct_data)
+            saved_ids.append(new_id)
+            if first_account_id is None:
+                first_account_id = new_id
+            logger.info(
+                "confirm_account: created account_id=%s for doc=%s",
+                new_id, document_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "confirm_account: failed to create account for doc=%s: %s",
+                document_id, exc,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create account: {exc}",
+            )
+
+    # Link document.account_id only if not already set (first save wins)
+    if first_account_id is not None and not doc.get("account_id"):
+        sb.table("documents").update(
+            {"account_id": first_account_id}
+        ).eq("document_id", document_id).execute()
+
+    # Mark this account's match_log row as CONFIRMED
+    if first_account_id is not None and body.accounts:
+        acct = body.accounts[0]
+        last4 = acct.get("account_number_last4") or acct.get("card_last4")
+        try:
+            sb.table("document_account_match_log").update(
+                {"match_status": "CONFIRMED"}
+            ).eq("document_id", document_id).eq(
+                "detected_account_last4", last4
+            ).execute()
+        except Exception:
+            pass  # non-fatal
+
+    return {
+        "message": "Account saved" if saved_ids else "Account linked",
+        "accounts_saved": len(saved_ids),
+        "account_id": first_account_id,
+    }
 
 
 @router.delete("/{document_id}")
@@ -501,12 +711,19 @@ async def delete_document(document_id: int, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Document not found")
 
     file_path = doc_result.data.get("file_path")
-    if file_path and os.path.exists(file_path):
-        try:
-            os.remove(file_path)
-            logger.info("Deleted file: %s", file_path)
-        except Exception as e:
-            logger.warning("Could not delete file %s: %s", file_path, e)
+    if file_path:
+        if not file_path.startswith("/"):
+            try:
+                sb.storage.from_(SUPABASE_STORAGE_BUCKET).remove([file_path])
+                logger.info("Deleted from Supabase Storage: %s", file_path)
+            except Exception as e:
+                logger.warning("Could not delete storage file %s: %s", file_path, e)
+        elif os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info("Deleted local file: %s", file_path)
+            except Exception as e:
+                logger.warning("Could not delete local file %s: %s", file_path, e)
 
     # Delete child records then the document
     sb.table("ai_transactions_staging").delete().eq("document_id", document_id).execute()
