@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Check, Code, FileSearch, Building2, Cpu, Loader2, ChevronLeft, CheckCircle, Download, CreditCard, AlertCircle, Link } from "lucide-react";
+import { Check, Code, FileSearch, Building2, Cpu, Loader2, ChevronLeft, CheckCircle, Download, Link } from "lucide-react";
 import AppLayout from "../components/Layout";
 import API from "../api/api";
 
@@ -15,13 +15,10 @@ export default function ReviewPage() {
     const [error, setError] = useState("");
     const [isApproved, setIsApproved] = useState(false);
     const [isApproving, setIsApproving] = useState(false);
-    const [accountInfo, setAccountInfo] = useState([]); // detected accounts from pipeline
-    // Per-account action state — keyed by array index
-    // status: null | "saving" | "saved" | "skipped"
-    const [accountStatus, setAccountStatus] = useState({});
-
-    const setAcctStatus = (idx, status) =>
-        setAccountStatus(prev => ({ ...prev, [idx]: status }));
+    const [userAccounts, setUserAccounts] = useState([]);     // all user's accounts for dropdown
+    const [selectedAccountId, setSelectedAccountId] = useState(null); // currently chosen
+    const [isLinkingAccount, setIsLinkingAccount] = useState(false);
+    const [accountLinked, setAccountLinked] = useState(false);
 
     useEffect(() => {
         if (!documentId) {
@@ -34,18 +31,18 @@ export default function ReviewPage() {
             try {
                 const res = await API.get(`/documents/${documentId}/review`);
                 setData(res.data);
-                // Populate account banner from review response
-                if (res.data.account_info && res.data.account_info.length > 0) {
-                    setAccountInfo(res.data.account_info);
-                    // Pre-mark existing accounts as already "linked" so no buttons show
-                    const initialStatus = {};
-                    res.data.account_info.forEach((a, i) => {
-                        if (!a.is_new_account) initialStatus[i] = "linked";
-                    });
-                    setAccountStatus(initialStatus);
+                // Populate account dropdown
+                if (res.data.user_accounts) {
+                    setUserAccounts(res.data.user_accounts);
+                }
+                // If document already has a linked account, pre-select it
+                if (res.data.selected_account_id) {
+                    setSelectedAccountId(res.data.selected_account_id);
+                    setAccountLinked(true);
                 }
                 if (res.data.status === "APPROVE") {
                     setIsApproved(true);
+                    setAccountLinked(true);
                 }
             } catch (err) {
                 console.error(err);
@@ -70,32 +67,19 @@ export default function ReviewPage() {
         }
     };
 
-    // Save a single detected account by its index in accountInfo
-    const handleSaveAccount = async (idx) => {
-        setAcctStatus(idx, "saving");
+    const handleLinkAccount = async () => {
+        if (!selectedAccountId) return;
+        setIsLinkingAccount(true);
         try {
-            await API.post(`/documents/${documentId}/confirm-account`, {
-                save: true,
-                accounts: [accountInfo[idx]],
+            await API.post(`/documents/${documentId}/select-account`, {
+                account_id: selectedAccountId,
             });
-            setAcctStatus(idx, "saved");
+            setAccountLinked(true);
         } catch (err) {
             console.error(err);
-            setAcctStatus(idx, null); // reset so user can retry
-            alert("Failed to save account: " + (err.response?.data?.detail || err.message));
-        }
-    };
-
-    // Skip a single detected account — fire-and-forget, non-fatal
-    const handleSkipAccount = async (idx) => {
-        setAcctStatus(idx, "skipped");
-        try {
-            await API.post(`/documents/${documentId}/confirm-account`, {
-                save: false,
-                accounts: [accountInfo[idx]],
-            });
-        } catch (err) {
-            console.error(err); // non-fatal
+            alert("Failed to link account: " + (err.response?.data?.detail || err.message));
+        } finally {
+            setIsLinkingAccount(false);
         }
     };
 
@@ -287,142 +271,107 @@ export default function ReviewPage() {
                     </div>
                 </div>
 
-                {/* ── Account Banner ─────────────────────────────────────────── */}
-                {accountInfo.length > 0 && (
-                    <div className="review-card" style={{ marginBottom: '1.5rem', padding: '1rem 1.5rem' }}>
-                        {accountInfo.map((acct, idx) => {
-                            const status = accountStatus[idx]; // null | "saving" | "saved" | "skipped" | "linked"
-                            const last4 = acct.account_number_last4 || acct.card_last4;
+                {/* ── Account Selector ────────────────────────────────────────── */}
+                <div className="review-card" style={{ marginBottom: '1.5rem', padding: '1rem 1.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        {/* Icon */}
+                        <div style={{
+                            width: 36, height: 36, borderRadius: '50%',
+                            background: accountLinked ? '#e8f5e9' : '#ede9ff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            flexShrink: 0,
+                        }}>
+                            <Link size={16} color={accountLinked ? '#27ae60' : '#483EA8'} />
+                        </div>
 
-                            return (
-                                <div key={idx} style={{
-                                    display: 'flex',
+                        {/* Label + dropdown */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <p style={{ margin: 0, fontSize: '0.75rem', fontWeight: 600, color: '#6b7280', marginBottom: 4 }}>
+                                Link this document to an account
+                            </p>
+                            {userAccounts.length > 0 ? (
+                                <select
+                                    value={selectedAccountId || ""}
+                                    onChange={e => {
+                                        setSelectedAccountId(Number(e.target.value) || null);
+                                        setAccountLinked(false);
+                                    }}
+                                    disabled={isApproved}
+                                    style={{
+                                        width: '100%',
+                                        maxWidth: 360,
+                                        padding: '0.4rem 0.6rem',
+                                        fontSize: '0.82rem',
+                                        fontWeight: 600,
+                                        color: '#111827',
+                                        border: '1.5px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        background: '#fff',
+                                        fontFamily: 'inherit',
+                                        cursor: isApproved ? 'not-allowed' : 'pointer',
+                                        outline: 'none',
+                                    }}
+                                >
+                                    <option value="">— Select account —</option>
+                                    {userAccounts.map(acct => {
+                                        const last4 = acct.account_number_last4 || acct.card_last4;
+                                        const label = last4
+                                            ? `${acct.account_name}  ••••${last4}`
+                                            : acct.account_name;
+                                        return (
+                                            <option key={acct.account_id} value={acct.account_id}>
+                                                {label}
+                                            </option>
+                                        );
+                                    })}
+                                </select>
+                            ) : (
+                                <p style={{ margin: 0, fontSize: '0.78rem', color: '#9ca3af' }}>
+                                    No accounts added yet. Add accounts from the Dashboard.
+                                </p>
+                            )}
+                        </div>
+
+                        {/* Link button or Linked chip */}
+                        {accountLinked ? (
+                            <span style={{
+                                fontSize: '0.7rem', fontWeight: 700,
+                                color: '#27ae60', background: '#e8f5e9',
+                                padding: '3px 10px', borderRadius: '50px', flexShrink: 0,
+                            }}>
+                                ✓ Linked
+                            </span>
+                        ) : (
+                            <button
+                                onClick={handleLinkAccount}
+                                disabled={!selectedAccountId || isLinkingAccount || isApproved}
+                                style={{
+                                    padding: '0.4rem 1.1rem',
+                                    background: selectedAccountId ? '#483EA8' : '#e5e7eb',
+                                    color: selectedAccountId ? '#fff' : '#9ca3af',
+                                    border: 'none',
+                                    borderRadius: '8px',
+                                    fontWeight: 700,
+                                    fontSize: '0.78rem',
+                                    fontFamily: 'inherit',
+                                    cursor: selectedAccountId && !isApproved ? 'pointer' : 'not-allowed',
+                                    display: 'inline-flex',
                                     alignItems: 'center',
-                                    gap: '1rem',
-                                    paddingTop: idx > 0 ? '0.75rem' : 0,
-                                    marginTop: idx > 0 ? '0.75rem' : 0,
-                                    borderTop: idx > 0 ? '1px solid #f0f0f0' : 'none',
-                                }}>
-                                    {/* ── Icon ──────────────────────────────── */}
-                                    <div style={{
-                                        width: 36, height: 36, borderRadius: '50%',
-                                        background: acct.is_new_account ? '#ede9ff' : '#e8f5e9',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                        flexShrink: 0,
-                                    }}>
-                                        {acct.is_new_account
-                                            ? <CreditCard size={16} color="#483EA8" />
-                                            : <Link size={16} color="#27ae60" />
-                                        }
-                                    </div>
-
-                                    {/* ── Account text ──────────────────────── */}
-                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                        <p style={{
-                                            margin: 0,
-                                            fontSize: '0.82rem',
-                                            fontWeight: 700,
-                                            color: acct.is_new_account ? '#111827' : '#27ae60',
-                                        }}>
-                                            {acct.is_new_account ? 'New account detected' : 'Account linked'}
-                                        </p>
-                                        <p style={{ margin: 0, fontSize: '0.75rem', color: '#6b7280', marginTop: 2 }}>
-                                            {acct.institution_name}
-                                            {last4 && (
-                                                <span style={{ marginLeft: 6, letterSpacing: '0.08em', fontFamily: 'monospace' }}>
-                                                    ••••{last4}
-                                                </span>
-                                            )}
-                                            {acct.suggested_name && acct.is_new_account && (
-                                                <span style={{ marginLeft: 8, color: '#9ca3af', fontSize: '0.7rem' }}>
-                                                    will be saved as "{acct.suggested_name}"
-                                                </span>
-                                            )}
-                                        </p>
-                                    </div>
-
-                                    {/* ── Right side: buttons OR status chip ── */}
-                                    {acct.is_new_account ? (
-                                        // NEW account — show Save/Skip until actioned
-                                        status === "saved" ? (
-                                            <span style={{
-                                                fontSize: '0.7rem', fontWeight: 700,
-                                                color: '#27ae60', background: '#e8f5e9',
-                                                padding: '3px 10px', borderRadius: '50px', flexShrink: 0,
-                                            }}>
-                                                ✓ Saved
-                                            </span>
-                                        ) : status === "skipped" ? (
-                                            <span style={{
-                                                fontSize: '0.7rem', fontWeight: 600,
-                                                color: '#9ca3af', background: '#f3f4f6',
-                                                padding: '3px 10px', borderRadius: '50px', flexShrink: 0,
-                                            }}>
-                                                Skipped
-                                            </span>
-                                        ) : (
-                                            // Pending — show action buttons
-                                            <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
-                                                <button
-                                                    onClick={() => handleSaveAccount(idx)}
-                                                    disabled={status === "saving"}
-                                                    style={{
-                                                        padding: '0.35rem 1rem',
-                                                        background: '#483EA8',
-                                                        color: '#fff',
-                                                        border: 'none',
-                                                        borderRadius: '8px',
-                                                        fontWeight: 700,
-                                                        fontSize: '0.75rem',
-                                                        cursor: status === "saving" ? 'not-allowed' : 'pointer',
-                                                        opacity: status === "saving" ? 0.65 : 1,
-                                                        fontFamily: 'inherit',
-                                                        display: 'inline-flex',
-                                                        alignItems: 'center',
-                                                        gap: 4,
-                                                    }}
-                                                >
-                                                    {status === "saving"
-                                                        ? <><Loader2 size={12} className="spin-icon" /> Saving…</>
-                                                        : 'Save Account'
-                                                    }
-                                                </button>
-                                                <button
-                                                    onClick={() => handleSkipAccount(idx)}
-                                                    disabled={status === "saving"}
-                                                    style={{
-                                                        padding: '0.35rem 0.85rem',
-                                                        background: 'transparent',
-                                                        color: '#6b7280',
-                                                        border: '1px solid #e5e7eb',
-                                                        borderRadius: '8px',
-                                                        fontWeight: 600,
-                                                        fontSize: '0.75rem',
-                                                        cursor: status === "saving" ? 'not-allowed' : 'pointer',
-                                                        fontFamily: 'inherit',
-                                                    }}
-                                                >
-                                                    Skip
-                                                </button>
-                                            </div>
-                                        )
-                                    ) : (
-                                        // EXISTING account — always just a "Linked" chip, no action needed
-                                        <span style={{
-                                            fontSize: '0.7rem', fontWeight: 700,
-                                            color: '#27ae60', background: '#e8f5e9',
-                                            padding: '3px 10px', borderRadius: '50px', flexShrink: 0,
-                                        }}>
-                                            ✓ Linked
-                                        </span>
-                                    )}
-                                </div>
-                            );
-                        })}
+                                    gap: 4,
+                                    flexShrink: 0,
+                                    transition: 'background 0.15s',
+                                }}
+                            >
+                                {isLinkingAccount
+                                    ? <><Loader2 size={12} className="spin-icon" /> Linking…</>
+                                    : <><Link size={12} /> Link</>
+                                }
+                            </button>
+                        )}
                     </div>
-                )}
+                </div>
 
-                {/* Main content: tables on left, JSON on right */}
+                                {/* Main content: tables on left, JSON on right */}
                 <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-start' }}>
                     <div style={{ flex: 2, display: 'flex', flexDirection: 'column', gap: '1.5rem', minWidth: 0 }}>
                         {renderTransactionTable(

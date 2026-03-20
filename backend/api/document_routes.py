@@ -12,7 +12,7 @@ import uuid
 import hashlib
 from typing import Optional
 from db.connection import get_client
-from services.account_detector import detect_accounts, create_account_from_detection
+from services.account_detector import get_user_accounts, link_document_to_account
 from auth.utils import get_current_user
 
 logger = logging.getLogger("ledgerai.document_routes")
@@ -430,42 +430,19 @@ async def get_document_review(document_id: int, user=Depends(get_current_user)):
     bank_name  = cat.get("institution_name") or "Pending Identification"
     ident_json = cat.get("statement_identifier")
 
-    # ── Fetch account detection results for this document ────────────────────
-    account_info = []
-    try:
-        match_rows = (
-            sb.table("document_account_match_log")
-            .select(
-                "detected_institution, detected_account_last4, "
-                "matched_account_id, match_status"
-            )
-            .eq("document_id", document_id)
-            .execute()
-        ).data or []
-
-        for row in match_rows:
-            entry = {
-                "institution_name":      row.get("detected_institution") or bank_name,
-                "account_number_last4":  row.get("detected_account_last4"),
-                "existing_account_id":   row.get("matched_account_id"),
-                "is_new_account":        row.get("match_status") == "NEW",
-                "account_number_masked": (
-                    "X" * 6 + row["detected_account_last4"]
-                    if row.get("detected_account_last4") else None
-                ),
-            }
-            account_info.append(entry)
-    except Exception as _e:
-        logger.warning("get_document_review: failed to fetch account_info: %s", _e)
+    # ── Fetch all accounts for this user for the dropdown ───────────────────
+    user_id_for_accounts = user["user_id"]
+    user_accounts = get_user_accounts(user_id_for_accounts)
 
     return {
-        "bank_name":         bank_name,
-        "identifier_json":   ident_json,
-        "code_transactions": code_txns,
-        "llm_transactions":  llm_txns,
-        "status":            doc["status"],
-        "account_info":      account_info,
+        "bank_name":              bank_name,
+        "identifier_json":        ident_json,
+        "code_transactions":      code_txns,
+        "llm_transactions":       llm_txns,
+        "status":                 doc["status"],
         "transaction_parsed_type": doc.get("transaction_parsed_type"),
+        "selected_account_id":    doc.get("account_id"),   # already linked account if any
+        "user_accounts":          user_accounts,           # list for dropdown
     }
 
 
@@ -545,67 +522,14 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
     return {"message": "Document approved", "inserted": inserted}
 
 
-@router.get("/{document_id}/account-info")
-async def get_account_info(document_id: int, user=Depends(get_current_user)):
-    """
-    Return detected account info for this document.
-    Called by the Review screen to show the account banner.
-    """
-    user_id = user["user_id"]
-    sb = get_client()
-
-    # Verify document belongs to this user
-    doc = (
-        sb.table("documents")
-        .select("document_id, account_id")
-        .eq("document_id", document_id)
-        .eq("user_id", user_id)
-        .maybe_single()
-        .execute()
-    ).data
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    match_rows = (
-        sb.table("document_account_match_log")
-        .select(
-            "detected_institution, detected_account_last4, "
-            "matched_account_id, match_status"
-        )
-        .eq("document_id", document_id)
-        .execute()
-    ).data or []
-
-    accounts = []
-    for row in match_rows:
-        last4 = row.get("detected_account_last4")
-        accounts.append({
-            "institution_name":      row.get("detected_institution"),
-            "account_number_last4":  last4,
-            "account_number_masked": ("X" * 6 + last4) if last4 else None,
-            "existing_account_id":   row.get("matched_account_id"),
-            "is_new_account":        row.get("match_status") == "NEW",
-        })
-
-    return {"accounts": accounts}
-
-
-class ConfirmAccountRequest(BaseModel):
-    save: bool
-    accounts: list
-
-
-@router.post("/{document_id}/confirm-account")
-async def confirm_account(
+@router.get("/{document_id}/user-accounts")
+async def get_user_accounts_for_document(
     document_id: int,
-    body: ConfirmAccountRequest,
     user=Depends(get_current_user),
 ):
     """
-    Called when user clicks Save or Skip on the account banner.
-
-    save=True  → create account rows, link documents.account_id
-    save=False → leave documents.account_id NULL (user skipped)
+    Return all accounts belonging to this user for the account dropdown
+    on the Review screen.
     """
     user_id = user["user_id"]
     sb = get_client()
@@ -622,76 +546,62 @@ async def confirm_account(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    if not body.save:
-        # User clicked Skip for this specific account — record it, nothing else
-        logger.info("confirm_account: user skipped for doc=%s", document_id)
-        if body.accounts:
-            acct = body.accounts[0]
-            last4 = acct.get("account_number_last4") or acct.get("card_last4")
-            try:
-                sb.table("document_account_match_log").update(
-                    {"match_status": "SKIPPED"}
-                ).eq("document_id", document_id).eq(
-                    "detected_account_last4", last4
-                ).execute()
-            except Exception:
-                pass  # non-fatal
-        return {"message": "Skipped", "accounts_saved": 0}
-
-    saved_ids = []
-    first_account_id = None
-
-    for acct_data in body.accounts:
-        # Existing account — link document if account_id not yet set
-        if acct_data.get("existing_account_id"):
-            if first_account_id is None:
-                first_account_id = acct_data["existing_account_id"]
-            continue
-
-        # New account — create it
-        try:
-            new_id = create_account_from_detection(user_id, acct_data)
-            saved_ids.append(new_id)
-            if first_account_id is None:
-                first_account_id = new_id
-            logger.info(
-                "confirm_account: created account_id=%s for doc=%s",
-                new_id, document_id,
-            )
-        except Exception as exc:
-            logger.error(
-                "confirm_account: failed to create account for doc=%s: %s",
-                document_id, exc,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to create account: {exc}",
-            )
-
-    # Link document.account_id only if not already set (first save wins)
-    if first_account_id is not None and not doc.get("account_id"):
-        sb.table("documents").update(
-            {"account_id": first_account_id}
-        ).eq("document_id", document_id).execute()
-
-    # Mark this account's match_log row as CONFIRMED
-    if first_account_id is not None and body.accounts:
-        acct = body.accounts[0]
-        last4 = acct.get("account_number_last4") or acct.get("card_last4")
-        try:
-            sb.table("document_account_match_log").update(
-                {"match_status": "CONFIRMED"}
-            ).eq("document_id", document_id).eq(
-                "detected_account_last4", last4
-            ).execute()
-        except Exception:
-            pass  # non-fatal
-
+    accounts = get_user_accounts(user_id)
     return {
-        "message": "Account saved" if saved_ids else "Account linked",
-        "accounts_saved": len(saved_ids),
-        "account_id": first_account_id,
+        "user_accounts":       accounts,
+        "selected_account_id": doc.get("account_id"),
     }
+
+
+class SelectAccountRequest(BaseModel):
+    account_id: int
+
+
+@router.post("/{document_id}/select-account")
+async def select_account(
+    document_id: int,
+    body: SelectAccountRequest,
+    user=Depends(get_current_user),
+):
+    """
+    Called when user picks an account from the dropdown on the Review screen.
+    Links the document to the chosen account_id.
+    """
+    user_id = user["user_id"]
+    sb = get_client()
+
+    # Verify document belongs to this user
+    doc = (
+        sb.table("documents")
+        .select("document_id, account_id")
+        .eq("document_id", document_id)
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    ).data
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Verify the selected account belongs to this user
+    acct = (
+        sb.table("accounts")
+        .select("account_id")
+        .eq("account_id", body.account_id)
+        .eq("user_id", user_id)
+        .eq("is_active", True)
+        .maybe_single()
+        .execute()
+    ).data
+    if not acct:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    link_document_to_account(document_id, body.account_id)
+
+    logger.info(
+        "select_account: doc=%s linked to account_id=%s by user=%s",
+        document_id, body.account_id, user_id,
+    )
+    return {"message": "Account linked", "account_id": body.account_id}
 
 
 @router.delete("/{document_id}")
