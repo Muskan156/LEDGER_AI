@@ -33,7 +33,6 @@ from repository.document_repo import (
     insert_staging_transactions,
     insert_staging_code_only,
 )
-from services.account_detector import detect_accounts, save_account_match
 from repository.statement_category_repo import (
     activate_statement_category,
     update_statement_status,
@@ -191,12 +190,6 @@ def process_document(document_id: int):
                     insert_staging_code_only(document_id, user_id, code_txns, 100.0)
                     update_document_status(document_id, "AWAITING_REVIEW")
                     insert_audit(document_id, "COMPLETED")
-                    # Run account detection even on fast path
-                    try:
-                        _ar = detect_accounts(full_text, identity_json, user_id)
-                        save_account_match(document_id, user_id, _ar)
-                    except Exception as _e:
-                        logger.warning("[STEP 3e fast-path] Account detection failed: %s", _e)
                     logger.info("═" * 70)
                     return  # ← EXIT fast path
 
@@ -246,31 +239,6 @@ def process_document(document_id: int):
             update_document_statement(document_id, statement_id)
             statement_status = "UNDER_REVIEW"
             logger.info("Saved as statement_id=%s (UNDER_REVIEW)", statement_id)
-
-        # ═══════════════════════════════════════════════════
-        # STEP 3e — ACCOUNT DETECTION
-        # Runs after format identification so identity_json is available.
-        # Extracts account/card/loan number from PDF text, validates it,
-        # matches against user's existing accounts, and persists result.
-        # Non-fatal: failure here never blocks the rest of the pipeline.
-        # ═══════════════════════════════════════════════════
-        logger.info("")
-        logger.info("[STEP 3e] Account detection...")
-        try:
-            account_result = detect_accounts(
-                text=full_text,
-                identifier_json=identity_json,
-                user_id=user_id,
-            )
-            save_account_match(document_id, user_id, account_result)
-            detected = account_result.get("accounts_detected", [])
-            logger.info(
-                "[STEP 3e] Done — detected=%d  primary_account_id=%s",
-                len(detected),
-                account_result.get("primary_account_id"),
-            )
-        except Exception as _acct_err:
-            logger.warning("[STEP 3e] Account detection failed (non-fatal): %s", _acct_err)
 
         # ═══════════════════════════════════════════════════
         # STEP 4 — DUAL EXTRACTION (CODE + LLM in parallel)
