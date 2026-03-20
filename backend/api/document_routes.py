@@ -17,8 +17,7 @@ logger = logging.getLogger("ledgerai.document_routes")
 
 router = APIRouter()
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+SUPABASE_STORAGE_BUCKET = "financial_document_uploads"  # Change this to your actual bucket name
 
 
 def _is_password_exception(exc: Exception) -> bool:
@@ -134,7 +133,7 @@ async def verify_pdf_type(file: UploadFile = File(...), password: Optional[str] 
 
     logger.info("")
     logger.info("─" * 50)
-    logger.info("📋 PDF TYPE DETECTION: %s", file.filename)
+    logger.info("PDF TYPE DETECTION: %s", file.filename)
     logger.info("─" * 50)
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -142,31 +141,31 @@ async def verify_pdf_type(file: UploadFile = File(...), password: Optional[str] 
         tmp_path = tmp.name
 
     file_size = os.path.getsize(tmp_path)
-    logger.info("   ├─ File size   : %s bytes", f"{file_size:,}")
+    logger.info("File size   : %s bytes", f"{file_size:,}")
 
     pdf_type = "TEXT_PDF"
     try:
-        logger.info("   ├─ Step 0      : Checking encryption (pypdf)...")
+        logger.info("Step 0      : Checking encryption (pypdf)...")
         encryption_result = _check_encryption_pypdf(tmp_path, password)
         if encryption_result == "PASSWORD_TEXT_PDF":
-            logger.info("   ├─ Detected    : Password-protected PDF ⚠️")
-            logger.info("   └─ Final type  : PASSWORD_TEXT_PDF")
+            logger.info("Detected    : Password-protected PDF")
+            logger.info("Final type  : PASSWORD_TEXT_PDF")
             return {"filename": file.filename, "pdf_type": "PASSWORD_TEXT_PDF"}
         elif encryption_result is None:
-            logger.info("   ├─ Encryption  : Not encrypted (or decrypted OK)")
+            logger.info("Encryption  : Not encrypted (or decrypted OK)")
 
         try:
-            logger.info("   ├─ Step 1      : Content analysis (pdfplumber)...")
+            logger.info("Step 1      : Content analysis (pdfplumber)...")
             pdf_type = _detect_pdf_type_pdfplumber(tmp_path, password)
-            logger.info("   ├─ Result      : %s ✅", pdf_type)
+            logger.info("Result      : %s", pdf_type)
         except Exception as e1:
-            logger.warning("   ├─ pdfplumber failed: %s (type: %s)", str(e1)[:120], type(e1).__name__)
+            logger.warning("pdfplumber failed: %s (type: %s)", str(e1)[:120], type(e1).__name__)
             if _is_password_exception(e1):
                 pdf_type = "PASSWORD_TEXT_PDF"
             else:
                 try:
                     pdf_type = _detect_pdf_type_pypdf_content(tmp_path, password)
-                    logger.info("   ├─ Result      : %s ✅", pdf_type)
+                    logger.info("Result      : %s ", pdf_type)
                 except ImportError:
                     pdf_type = "TEXT_PDF" if _is_valid_pdf_binary(tmp_path) else "CORRUPTED_PDF"
                 except Exception as e2:
@@ -206,30 +205,56 @@ async def upload_and_process(
 
     logger.info("")
     logger.info("═" * 50)
-    logger.info("📤 DOCUMENT UPLOAD: %s", file.filename)
+    logger.info("DOCUMENT UPLOAD: %s", file.filename)
     logger.info("═" * 50)
-    logger.info("   ├─ user_id     : %s", user_id)
-    logger.info("   ├─ password    : %s", "YES" if password else "NO")
+    logger.info("user_id     : %s", user_id)
+    logger.info("password    : %s", "YES" if password else "NO")
 
     unique_token = uuid.uuid4().hex
     file_hash = hashlib.sha256(f"{user_id}_{file.filename}_{unique_token}".encode()).hexdigest()[:24]
     safe_filename = f"{file_hash}.pdf"
-    file_path = os.path.join(UPLOAD_DIR, safe_filename)
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
 
-    file_size = os.path.getsize(file_path)
-    logger.info("   ├─ Saved to    : %s", file_path)
-    logger.info("   ├─ File size   : %s bytes", f"{file_size:,}")
+    # Read file bytes into memory — no permanent local disk write
+    file_bytes = await file.read()
+    file_size = len(file_bytes)
+    logger.info("File size   : %s bytes", f"{file_size:,}")
 
-    # Insert into documents table via Supabase client
+    # ── Upload to Supabase Storage ────────────────────────────
+    # Storage path format: "<user_id>/<hash>.pdf"
+    # This survives Render restarts/deploys (no ephemeral local disk dependency).
+    storage_path = f"{user_id}/{safe_filename}"
+
     sb = get_client()
+    try:
+        sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={"content-type": "application/pdf", "upsert": "false"},
+        )
+        logger.info("Uploaded to : supabase://%s/%s", SUPABASE_STORAGE_BUCKET, storage_path)
+    except Exception as upload_err:
+        logger.error("Supabase Storage upload failed: %s", upload_err)
+        raise HTTPException(
+            status_code=500,
+            detail=f"File upload to storage failed: {upload_err}",
+        )
+
+    # ── Write a local temp file for the processing thread ────
+    # The processing engine opens a local path to extract PDF text.
+    # We create a temp file here and delete it inside run_processing()
+    # once processing finishes (success or failure).
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    tmp_file.write(file_bytes)
+    tmp_file.close()
+    tmp_file_path = tmp_file.name
+    logger.info("Temp path   : %s (processing only, deleted after)", tmp_file_path)
+
     is_pw = bool(password)
 
     doc_result = sb.table("documents").insert({
         "user_id": user_id,
         "file_name": file.filename,
-        "file_path": file_path,
+        "file_path": storage_path,          # ← Supabase Storage path, not local disk
         "is_password_protected": is_pw,
         "status": "UPLOADED",
     }).execute()
@@ -241,21 +266,47 @@ async def upload_and_process(
             "encrypted_password": password,
         }).execute()
 
-    logger.info("   ├─ document_id : %s", document_id)
-    logger.info("   ├─ DB status   : UPLOADED")
-    logger.info("   ├─ 🚀 Starting background processing thread...")
+    logger.info("═" * 50)
+    logger.info("document_id : %s", document_id)
+    logger.info("DB status   : UPLOADED")
+    logger.info("Starting background processing thread...")
+    logger.info("═" * 50)
 
     def run_processing():
+        """
+        Run processing engine with the temp local file, then clean up.
+        The processing_engine reads file_path from the DB — we temporarily
+        override it in-process by patching the document's local path so
+        extract_pdf_text() can open a real file.  After processing, the
+        temp file is removed regardless of outcome.
+        """
         try:
             from services.processing_engine import process_document
-            process_document(document_id)
+            # Temporarily patch the DB record so the engine uses our temp file.
+            # We update file_path to the temp path before processing starts,
+            # then restore the storage_path after.
+            patch_sb = get_client()
+            patch_sb.table("documents").update({"file_path": tmp_file_path}).eq("document_id", document_id).execute()
+            try:
+                process_document(document_id)
+            finally:
+                # Always restore the Supabase Storage path in the DB
+                patch_sb.table("documents").update({"file_path": storage_path}).eq("document_id", document_id).execute()
         except Exception as e:
             logger.error("[ERROR] Processing failed for doc %s: %s", document_id, e)
+        finally:
+            # Always delete the temp file — whether processing succeeded or not
+            if os.path.exists(tmp_file_path):
+                try:
+                    os.remove(tmp_file_path)
+                    logger.info("Temp file removed: %s", tmp_file_path)
+                except Exception as rm_err:
+                    logger.warning("Could not remove temp file %s: %s", tmp_file_path, rm_err)
 
     thread = threading.Thread(target=run_processing, daemon=True)
     thread.start()
 
-    logger.info("   └─ ✅ Upload complete, processing started in background")
+    logger.info("Upload complete, processing started in background")
     logger.info("═" * 50)
 
     return {"document_id": document_id, "status": "PROCESSING", "message": "Document uploaded. Processing started."}
@@ -429,7 +480,7 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
     sb.table("documents").update({"status": "APPROVE"}).eq("document_id", document_id).execute()
 
     inserted = len(rows)
-    logger.info("✅ Document %s approved by user %s — %d transactions saved", document_id, user_id, inserted)
+    logger.info("Document %s approved by user %s — %d transactions saved", document_id, user_id, inserted)
     return {"message": "Document approved", "inserted": inserted}
 
 
@@ -453,7 +504,7 @@ async def delete_document(document_id: int, user=Depends(get_current_user)):
     if file_path and os.path.exists(file_path):
         try:
             os.remove(file_path)
-            logger.info("🗑️ Deleted file: %s", file_path)
+            logger.info("Deleted file: %s", file_path)
         except Exception as e:
             logger.warning("Could not delete file %s: %s", file_path, e)
 
@@ -462,7 +513,7 @@ async def delete_document(document_id: int, user=Depends(get_current_user)):
     sb.table("uncategorized_transactions").delete().eq("document_id", document_id).execute()
     sb.table("documents").delete().eq("document_id", document_id).eq("user_id", user_id).execute()
 
-    logger.info("🗑️ Document %s deleted by user %s", document_id, user_id)
+    logger.info("Document %s deleted by user %s", document_id, user_id)
     return {"message": "Document deleted successfully"}
 
 

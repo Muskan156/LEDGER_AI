@@ -23,8 +23,9 @@ logging.basicConfig(
 
 logger = logging.getLogger("ledgerai.main")
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from auth.routes import router as auth_router
 from api.document_routes import router as document_router
 
@@ -57,6 +58,39 @@ app.add_middleware(
 # ── Routers ───────────────────────────────────────────────────
 app.include_router(auth_router, prefix="/auth", tags=["Auth"])
 app.include_router(document_router, prefix="/documents", tags=["Documents"])
+
+
+# ── Global exception handler ─────────────────────────────────
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    origin = request.headers.get("origin", "")
+
+    # Only echo back origins we actually allow — never reflect arbitrary origins.
+    allowed = set(origins)
+    cors_origin = origin if origin in allowed else ""
+
+    # Also accept Vercel preview URLs that match the regex pattern.
+    import re
+    if not cors_origin and re.match(r"https://ledger-ai-.*\.vercel\.app", origin):
+        cors_origin = origin
+
+    logger.exception(
+        "Unhandled exception on %s %s — %s: %s",
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+        exc,
+    )
+
+    headers = {"Access-Control-Allow-Credentials": "true"}
+    if cors_origin:
+        headers["Access-Control-Allow-Origin"] = cors_origin
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {exc}"},
+        headers=headers,
+    )
 
 
 # ── Startup config validation ─────────────────────────────────
