@@ -48,11 +48,10 @@ RULES
    - Footers (Page numbers, disclaimers, generated on...)
    - Summary rows (Opening Balance, Closing Balance, Total Debit/Credit)
    - Account info (Branch, IFSC, MICR, Account Number)
-3. DETAILS field must contain ONLY the transaction narration/description:
-   - Do NOT include dates, amounts, page numbers, or header text in details.
-   - Do NOT include footer text, branch info, or account numbers in details.
-   - Example GOOD: "NEFT CR ACME CORP SALARY"
-   - Example BAD: "01/01/2025 NEFT CR ACME CORP 50000.00 Page 1 of 3"
+3. DETAILS field must contain the transaction narration/description EXACTLY as it appears in the document.
+   - Copy the full description text character-for-character. Do NOT shorten, summarise, or rewrite it.
+   - Remove ONLY page numbers, page headers, and footer text if they are embedded in the description.
+   - Do NOT remove account numbers, reference numbers, or any part of the narration.
 4. Handle Indian number formats (1,00,000.00).
 5. Normalize dates to YYYY-MM-DD.
 6. DEBIT/CREDIT: Every transaction MUST have either debit or credit filled (not both None).
