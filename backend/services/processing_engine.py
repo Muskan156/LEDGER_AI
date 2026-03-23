@@ -16,10 +16,8 @@ from services.extraction_service import (
 )
 from services.llm_parser import parse_with_llm
 from services.validation_service import (
-    validate_transactions,
     extract_json_from_response,
-    validate_extraction_propriety,
-    validate_code_quality_strict,       
+    verify_exact_match,
 )
 from repository.document_repo import (
     get_document,
@@ -288,45 +286,22 @@ def process_document(document_id: int, override_file_path: str = None):
         logger.info("")
         logger.info("[STEP 5/5] VALIDATION & ACCURACY CHECK...")
 
-        metrics           = validate_transactions(code_txns, llm_txns)
-        comparison_score  = metrics.get("overall_accuracy", 0) if metrics else 0
+        # Compare CODE vs LLM on all 5 fields + count
+        # CODE wins only if everything matches exactly — otherwise LLM wins
+        exact = verify_exact_match(code_txns, llm_txns)
 
-        code_confidence = round(
-            sum(t.get("confidence", 0) for t in code_txns) / len(code_txns), 2
-        ) if code_txns else 0
-
-        llm_confidence = round(
-            sum(t.get("confidence", 0) for t in llm_txns) / len(llm_txns), 2
-        ) if llm_txns else 0
-
-        # BUG-02 fix: require BOTH gates to pass for CODE to win
-        code_is_proper = validate_extraction_propriety(code_txns)
-        code_is_strict = validate_code_quality_strict(code_txns)
-        code_passes_quality = code_is_proper and code_is_strict
-
-        logger.info("Code accuracy    : %.2f%%", comparison_score)
-        logger.info("Code confidence  : %.2f",   code_confidence)
-        logger.info("LLM confidence   : %.2f",   llm_confidence)
-        logger.info("Code propriety   : %s",      "PASS" if code_is_proper else "FAIL")
-        logger.info("Code strict gate : %s",      "PASS" if code_is_strict else "FAIL")
-
-        # Decision: 90% weighted accuracy + both quality gates → CODE wins
-        if comparison_score >= 90 and code_passes_quality:
+        if exact["match"]:
             final_parser_type    = "CODE"
             new_statement_status = "ACTIVE"
-            logger.info("DECISION: CODE WINS (accuracy=%.2f%% ≥ 90%% & both quality gates pass)", comparison_score)
-            logger.info("Format status → ACTIVE")
+            logger.info("DECISION: CODE WINS — all %d transactions match LLM exactly", len(code_txns))
         else:
             final_parser_type    = "LLM"
             new_statement_status = "EXPERIMENTAL"
-            if not code_is_proper:
-                reason = "code propriety check failed"
-            elif not code_is_strict:
-                reason = "code strict quality gate failed"
-            else:
-                reason = f"code accuracy {comparison_score:.2f}% < 90%"
-            logger.info("DECISION: LLM WINS (%s)", reason)
-            logger.info("Format status → EXPERIMENTAL")
+            logger.info("DECISION: LLM WINS — %s", exact["reason"])
+
+        logger.info("Format status → %s", new_statement_status)
+
+        comparison_score = 100.0 if exact["match"] else 0.0
 
         # Persist DB state
         update_statement_status(statement_id, new_statement_status)
