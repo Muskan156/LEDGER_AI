@@ -10,10 +10,7 @@ from repository.statement_category_repo import (
     insert_statement_category,
 )
 
-import anthropic
-from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL_NAME
-
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 logger = logging.getLogger("ledgerai.identifier_service")
 
 
@@ -759,16 +756,12 @@ PART 2 — RETURN THIS EXACT JSON STRUCTURE
 OUTPUT RULES: Return ONLY the JSON object. No markdown. No explanations.
 """
 
-    message = client.messages.create(
-        model=ANTHROPIC_MODEL_NAME,
-        max_tokens=8096,
-        temperature=0,
-        messages=[
-            {"role": "user", "content": prompt}
-        ],
+    response = call_with_retry(
+        client, GEMINI_MODEL_NAME, prompt,
+        config={"temperature": 0},
     )
 
-    raw = message.content[0].text.strip()
+    raw = response.text.strip()
 
     def sanitize_json(s: str) -> str:
         s = re.sub(r"```(?:json)?", "", s)

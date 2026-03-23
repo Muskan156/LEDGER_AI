@@ -1,7 +1,7 @@
 """
 services/extraction_service.py
 ──────────────────────────────
-STEP 4 — Generate extraction code via LLM (Claude / Anthropic)
+STEP 4 — Generate extraction code via LLM (Gemini)
 and execute it safely against document text.
 
 This module is the thin orchestrator. All document-family-specific
@@ -12,12 +12,13 @@ import re
 import logging
 from typing import List, Dict, Any
 
-import anthropic
-from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL_NAME
+from google import genai
+from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
+from services.llm_retry import call_with_retry
 from services.prompts import get_prompt
 from services.code_sandbox import execute_extraction_code, validate_code, clean_llm_code
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 logger = logging.getLogger("ledgerai.extraction_service")
 
 
@@ -42,16 +43,12 @@ def generate_extraction_logic_llm(
         document_family, len(prompt),
     )
 
-    message = client.messages.create(
-        model=ANTHROPIC_MODEL_NAME,
-        max_tokens=8096,
-        temperature=0,
-        messages=[
-            {"role": "user", "content": prompt}
-        ],
+    response = call_with_retry(
+        client, GEMINI_MODEL_NAME, prompt,
+        config={"temperature": 0},
     )
 
-    content = message.content[0].text.strip()
+    content = response.text.strip()
     if not content:
         raise ValueError("LLM returned empty extraction code.")
 
@@ -66,6 +63,7 @@ def generate_extraction_logic_llm(
     return raw_output
 
 
+
 # ═══════════════════════════════════════════════════════════
 # EXECUTE EXTRACTION CODE
 # ═══════════════════════════════════════════════════════════
@@ -75,17 +73,18 @@ def extract_transactions_using_logic(
     extraction_code: str,
 ) -> List[Dict]:
     """
-    Execute LLM-generated Python code safely via code_sandbox.
+    Execute LLM-generated Python code safely via code_sandbox,
     Returns cleaned transaction list.
     """
     try:
+        # Gap 3 fix: use code_sandbox (AST-validated exec) not raw exec
         raw_transactions = execute_extraction_code(extraction_code, full_text)
 
         if not isinstance(raw_transactions, list):
             raise ValueError(
                 f"Extraction returned {type(raw_transactions)}, expected List[Dict]."
             )
-
+        
         logger.info("Code extraction success: %d transactions.", len(raw_transactions))
         return raw_transactions
 
