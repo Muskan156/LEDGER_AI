@@ -80,10 +80,14 @@ def _split_pages_from_full_text(full_text: str) -> list:
 # MAIN PIPELINE
 # ═══════════════════════════════════════════════════════════
 
-def process_document(document_id: int):
+def process_document(document_id: int, override_file_path: str = None):
     """
     Main entry point. Called after document is inserted into DB.
     Runs the complete pipeline: extract → identify → parse → validate → stage.
+
+    override_file_path: if provided, use this local path for PDF extraction
+    instead of the file_path stored in the DB. This keeps the DB file_path
+    pointing to the permanent Supabase Storage path at all times.
     """
 
     try:
@@ -99,7 +103,10 @@ def process_document(document_id: int):
         if not doc:
             raise ValueError(f"Document {document_id} not found.")
 
-        file_path = doc["file_path"]
+        # Use override_file_path (local temp file) if provided,
+        # otherwise fall back to the DB path (Supabase Storage path).
+        # Never patch the DB file_path — that caused file_path to go NULL.
+        file_path = override_file_path or doc["file_path"]
         user_id   = doc["user_id"]
         password  = get_document_password(document_id)
 

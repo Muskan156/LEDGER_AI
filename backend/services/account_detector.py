@@ -46,49 +46,64 @@ def get_user_accounts(user_id: str) -> list:
     try:
         sb = get_client()
 
+        # Only fetch user-added bank/financial accounts (is_system_generated=false).
+        # The accounts table also contains system COA accounts (Bank Accounts,
+        # Base Salary, etc. with is_system_generated=true) which must NOT appear
+        # in this dropdown — they are chart-of-accounts categories, not real accounts.
         accounts_result = (
             sb.table("accounts")
             .select("account_id, account_name, account_type")
             .eq("user_id", user_id)
             .eq("is_active", True)
+            .eq("is_system_generated", False)
             .order("account_name")
             .execute()
         )
         accounts = accounts_result.data or []
 
         if not accounts:
+            logger.info("get_user_accounts: no user-added accounts for user=%s", user_id)
             return []
 
         account_ids = [a["account_id"] for a in accounts]
 
+        # Fetch identifiers — drop is_primary filter because some valid accounts
+        # may not have is_primary=true set, especially those added via older flows.
         idents_result = (
             sb.table("account_identifiers")
             .select(
                 "account_id, institution_name, "
-                "account_number_last4, card_last4"
+                "account_number_last4, card_last4, account_number_masked"
             )
             .in_("account_id", account_ids)
             .eq("is_active", True)
-            .eq("is_primary", True)
             .execute()
         )
-        idents = {row["account_id"]: row for row in (idents_result.data or [])}
+        # Deduplicate by account_id — keep first identifier per account
+        idents = {}
+        for row in (idents_result.data or []):
+            aid = row["account_id"]
+            if aid not in idents:
+                idents[aid] = row
 
         result = []
         for acct in accounts:
             aid   = acct["account_id"]
             ident = idents.get(aid, {})
+            last4 = ident.get("account_number_last4") or ident.get("card_last4")
             result.append({
-                "account_id":           aid,
-                "account_name":         acct["account_name"],
-                "account_type":         acct.get("account_type"),
-                "institution_name":     ident.get("institution_name"),
-                "account_number_last4": ident.get("account_number_last4"),
-                "card_last4":           ident.get("card_last4"),
+                "account_id":            aid,
+                "account_name":          acct["account_name"],
+                "account_type":          acct.get("account_type"),
+                "institution_name":      ident.get("institution_name"),
+                "account_number_last4":  ident.get("account_number_last4"),
+                "account_number_masked": ident.get("account_number_masked"),
+                "card_last4":            ident.get("card_last4"),
             })
 
         logger.info(
-            "get_user_accounts: user=%s  found=%d accounts", user_id, len(result)
+            "get_user_accounts: user=%s  found=%d user-added accounts",
+            user_id, len(result),
         )
         return result
 

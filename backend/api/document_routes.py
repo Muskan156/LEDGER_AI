@@ -293,23 +293,14 @@ async def upload_and_process(
     def run_processing():
         """
         Run processing engine with the temp local file, then clean up.
-        The processing_engine reads file_path from the DB — we temporarily
-        override it in-process by patching the document's local path so
-        extract_pdf_text() can open a real file.  After processing, the
-        temp file is removed regardless of outcome.
+        We pass tmp_file_path directly to process_document so the DB
+        file_path column always holds the permanent Supabase Storage path.
+        Never patch the DB — that was the root cause of file_path going NULL.
         """
         try:
             from services.processing_engine import process_document
-            # Temporarily patch the DB record so the engine uses our temp file.
-            # We update file_path to the temp path before processing starts,
-            # then restore the storage_path after.
-            patch_sb = get_client()
-            patch_sb.table("documents").update({"file_path": tmp_file_path}).eq("document_id", document_id).execute()
-            try:
-                process_document(document_id)
-            finally:
-                # Always restore the Supabase Storage path in the DB
-                patch_sb.table("documents").update({"file_path": storage_path}).eq("document_id", document_id).execute()
+            # Pass the local temp path directly — DB file_path stays clean
+            process_document(document_id, override_file_path=tmp_file_path)
         except Exception as e:
             logger.error("[ERROR] Processing failed for doc %s: %s", document_id, e)
         finally:

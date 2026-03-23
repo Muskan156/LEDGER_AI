@@ -886,9 +886,30 @@ def save_new_statement_format(
         )
         return existing["statement_id"]
 
+    # Extract IFSC from the identity markers if present
+    # (the LLM stores it in identity_markers.issuer_identity.regulatory_identifiers.ifsc)
+    ifsc_code = None
+    try:
+        ifsc_pattern = (
+            identifier_json
+            .get("identity_markers", {})
+            .get("issuer_identity", {})
+            .get("regulatory_identifiers", {})
+            .get("ifsc", {})
+            .get("pattern")
+        )
+        if ifsc_pattern:
+            import re as _re
+            # The pattern is a regex — extract the IFSC prefix (first 4 letters)
+            m = _re.search(r"([A-Z]{4})", str(ifsc_pattern))
+            if m:
+                ifsc_code = m.group(1)
+    except Exception:
+        pass
+
     logger.info(
-        "Saving NEW format: name=%s  type=%s  institution=%s",
-        format_name, statement_type, institution_name,
+        "Saving NEW format: name=%s  type=%s  institution=%s  ifsc=%s",
+        format_name, statement_type, institution_name, ifsc_code,
     )
     return insert_statement_category(
         statement_type=statement_type,
@@ -896,5 +917,6 @@ def save_new_statement_format(
         institution_name=institution_name,
         identifier_json=identifier_json,
         extraction_logic=extraction_logic,
+        ifsc_code=ifsc_code,
         threshold=threshold,
     )
