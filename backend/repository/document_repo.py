@@ -173,12 +173,13 @@ def insert_uncategorized_transactions(
     statement_id: int,
     staging_transaction_id: int,
     transactions: list,
+    account_id: int = None,
 ):
     sb = get_client()
     rows = [
         {
             "user_id": user_id,
-            "account_id": None,
+            "account_id": account_id,   # populated from documents.account_id if user linked
             "document_id": document_id,
             "staging_transaction_id": staging_transaction_id,
             "txn_date": txn.get("date"),
