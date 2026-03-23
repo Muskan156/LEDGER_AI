@@ -3,24 +3,23 @@ services/llm_parser.py
 ──────────────────────
 STEP 4 METHOD 2 — Direct LLM transaction extraction.
 
-Sends full text + identifier to Gemini, which returns
+Sends full text + identifier to Claude (via Anthropic API), which returns
 structured transaction JSON directly.
 """
 
 import json
 import logging
 
-from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
-from services.llm_retry import call_with_retry
+import anthropic
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL_NAME
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 logger = logging.getLogger("ledgerai.llm_parser")
 
 
 def parse_with_llm(full_text: str, identifier_json: dict) -> str:
     """
-    Ask Gemini to directly extract transactions from the document text.
+    Ask Claude to directly extract transactions from the document text.
     Returns raw LLM response string (caller must parse JSON from it).
     """
     doc_family = identifier_json.get("document_family", "BANK_ACCOUNT_STATEMENT")
@@ -88,12 +87,16 @@ Return ONLY the JSON array. No markdown. No explanation.
     logger.info("Starting LLM parse: family=%s, text_len=%d",
                 doc_family, len(full_text))
 
-    response = call_with_retry(
-        client, GEMINI_MODEL_NAME, prompt,
-        config={"temperature": 0},
+    message = client.messages.create(
+        model=ANTHROPIC_MODEL_NAME,
+        max_tokens=8096,
+        temperature=0,
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
     )
 
-    llm_response = response.text.strip()
+    llm_response = message.content[0].text.strip()
     logger.info("LLM parse complete: response_len=%d", len(llm_response))
 
     return llm_response

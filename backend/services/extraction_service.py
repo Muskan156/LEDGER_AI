@@ -1,143 +1,7 @@
 """
 services/extraction_service.py
 ──────────────────────────────
-STEP 4 — Generate extraction code via LLM (Gemini)
-and execute it safely against document text.
-
-This module is the thin orchestrator. All document-family-specific
-prompts live in services/prompts/*.py.
-"""
-
-# import re
-# import logging
-# from typing import List, Dict, Any
-
-# from google import genai
-# from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
-# from services.llm_retry import call_with_retry
-# from services.prompts import get_prompt
-
-# client = genai.Client(api_key=GEMINI_API_KEY)
-# logger = logging.getLogger("ledgerai.extraction_service")
-
-
-# # ═══════════════════════════════════════════════════════════
-# # GENERATE EXTRACTION CODE VIA LLM
-# # ═══════════════════════════════════════════════════════════
-
-# def generate_extraction_logic_llm(
-#     identifier_json: dict,
-#     text_sample: str,
-# ) -> str:
-#     """
-#     Generates extraction code using a family-specific prompt.
-#     Returns raw Python code string containing extract_transactions().
-#     """
-#     document_family = identifier_json.get("document_family", "BANK_ACCOUNT_STATEMENT")
-
-#     # Build prompt from the appropriate family module
-#     prompt = get_prompt(document_family, identifier_json, text_sample)
-
-#     logger.info(
-#         "Generating extraction code: family=%s, prompt_len=%d",
-#         document_family, len(prompt),
-#     )
-
-#     response = call_with_retry(
-#         client, GEMINI_MODEL_NAME, prompt,
-#         config={"temperature": 0},
-#     )
-
-#     content = response.text.strip()
-#     if not content:
-#         raise ValueError("LLM returned empty extraction code.")
-
-#     # Post-process: strip markdown fences
-#     raw_output = _strip_markdown(content)
-
-#     logger.info("Generated code: %d chars.", len(raw_output))
-#     return raw_output
-
-
-# # ═══════════════════════════════════════════════════════════
-# # EXECUTE EXTRACTION CODE
-# # ═══════════════════════════════════════════════════════════
-
-# def extract_transactions_using_logic(
-#     full_text: str,
-#     extraction_code: str,
-# ) -> List[Dict]:
-#     """
-#     Execute LLM-generated Python code containing extract_transactions().
-#     Returns the list of transaction dicts.
-#     """
-#     try:
-#         cleaned_code = extraction_code.strip()
-
-#         # Double-check markdown stripping
-#         if "```" in cleaned_code:
-#             cleaned_code = _strip_markdown(cleaned_code)
-
-#         # Prepare a sandboxed execution namespace
-#         execution_namespace = {
-#             "re": re,
-#             "List": List,
-#             "Dict": Dict,
-#             "Any": Any,
-#         }
-
-#         exec(cleaned_code, execution_namespace)
-
-#         if "extract_transactions" not in execution_namespace:
-#             raise ValueError(
-#                 "extract_transactions function not found in generated code."
-#             )
-
-#         extract_fn = execution_namespace["extract_transactions"]
-#         transactions = extract_fn(full_text)
-
-#         if not isinstance(transactions, list):
-#             raise ValueError(
-#                 f"Extraction returned {type(transactions)}, expected List[Dict]."
-#             )
-
-#         logger.info("Code extraction success: %d transactions.", len(transactions))
-#         return transactions
-
-#     except Exception as e:
-#         logger.error("Code extraction failed: %s", e)
-#         logger.debug("Failed code:\n%s", cleaned_code)
-#         raise RuntimeError(f"LLM extraction execution failed: {e}")
-
-
-# # ═══════════════════════════════════════════════════════════
-# # HELPERS
-# # ═══════════════════════════════════════════════════════════
-
-# def _strip_markdown(content: str) -> str:
-#     """Remove markdown code fences and leading 'python' tag from LLM output."""
-#     raw = content.strip()
-
-#     if "```" in raw:
-#         parts = raw.split("```")
-#         # Prefer the block that contains the target function
-#         for part in parts:
-#             if "def extract_transactions" in part:
-#                 raw = part
-#                 break
-#         else:
-#             raw = parts[1] if len(parts) > 1 else parts[0]
-
-#     raw = raw.strip()
-#     if raw.lower().startswith("python"):
-#         raw = raw[6:].strip()
-
-#     return raw
-
-"""
-services/extraction_service.py
-──────────────────────────────
-STEP 4 — Generate extraction code via LLM (Gemini)
+STEP 4 — Generate extraction code via LLM (Claude / Anthropic)
 and execute it safely against document text.
 
 This module is the thin orchestrator. All document-family-specific
@@ -148,13 +12,12 @@ import re
 import logging
 from typing import List, Dict, Any
 
-from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
-from services.llm_retry import call_with_retry
+import anthropic
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL_NAME
 from services.prompts import get_prompt
 from services.code_sandbox import execute_extraction_code, validate_code, clean_llm_code
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 logger = logging.getLogger("ledgerai.extraction_service")
 
 
@@ -179,12 +42,16 @@ def generate_extraction_logic_llm(
         document_family, len(prompt),
     )
 
-    response = call_with_retry(
-        client, GEMINI_MODEL_NAME, prompt,
-        config={"temperature": 0},
+    message = client.messages.create(
+        model=ANTHROPIC_MODEL_NAME,
+        max_tokens=8096,
+        temperature=0,
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
     )
 
-    content = response.text.strip()
+    content = message.content[0].text.strip()
     if not content:
         raise ValueError("LLM returned empty extraction code.")
 
@@ -199,7 +66,6 @@ def generate_extraction_logic_llm(
     return raw_output
 
 
-
 # ═══════════════════════════════════════════════════════════
 # EXECUTE EXTRACTION CODE
 # ═══════════════════════════════════════════════════════════
@@ -209,18 +75,17 @@ def extract_transactions_using_logic(
     extraction_code: str,
 ) -> List[Dict]:
     """
-    Execute LLM-generated Python code safely via code_sandbox,
+    Execute LLM-generated Python code safely via code_sandbox.
     Returns cleaned transaction list.
     """
     try:
-        # Gap 3 fix: use code_sandbox (AST-validated exec) not raw exec
         raw_transactions = execute_extraction_code(extraction_code, full_text)
 
         if not isinstance(raw_transactions, list):
             raise ValueError(
                 f"Extraction returned {type(raw_transactions)}, expected List[Dict]."
             )
-        
+
         logger.info("Code extraction success: %d transactions.", len(raw_transactions))
         return raw_transactions
 
