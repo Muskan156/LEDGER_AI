@@ -315,9 +315,10 @@ export default function ReviewPage() {
                                     <option value="">— Select account —</option>
                                     {userAccounts.map(acct => {
                                         const last4 = acct.account_number_last4 || acct.card_last4;
+                                        const institution = acct.institution_name || "Account";
                                         const label = last4
-                                            ? `${acct.account_name}  ••••${last4}`
-                                            : acct.account_name;
+                                            ? `${institution}  ••••${last4}`
+                                            : institution;
                                         return (
                                             <option key={acct.account_id} value={acct.account_id}>
                                                 {label}
