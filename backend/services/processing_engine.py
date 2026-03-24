@@ -94,10 +94,9 @@ def process_document(document_id: int, override_file_path: str = None):
         update_document_status(document_id, "EXTRACTING_TEXT")
 
         full_text = extract_pdf_text(file_path, password)
-        logger.info("full_text: %s", full_text)
         if not full_text:
             raise ValueError("PDF extraction returned empty text.")
-
+        sample_text = full_text[:8000]
         # Split full_text into per-page list using the === PAGE N === separators
         # that EnhancedFinancialPDFExtractor produces
         pages = [
@@ -201,7 +200,7 @@ def process_document(document_id: int, override_file_path: str = None):
             logger.info("[STEP 3c/5] Generating extraction code via LLM...")
             extraction_code = generate_extraction_logic_llm(
                 identifier_json=identity_json,
-                text_sample=full_text,
+                text_sample=sample_text,
             )
             logger.info("Extraction code generated (%d chars)", len(extraction_code))
 
