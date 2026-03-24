@@ -3,7 +3,8 @@ import json
 import logging
 from typing import Dict, List, Optional
 
-
+from google import genai
+from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
 from services.llm_retry import call_with_retry
 from repository.statement_category_repo import (
     get_all_matchable_formats,

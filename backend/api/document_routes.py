@@ -32,7 +32,8 @@ _DATE_RE = _re.compile(
 )
 
 def _is_valid_transaction(txn: dict) -> bool:
-    date_val = txn.get("date")
+    # Support both "date" (current parser format) and "txn_date" (old staging rows)
+    date_val = txn.get("date") or txn.get("txn_date")
     if not date_val:
         return False
     return bool(_DATE_RE.match(str(date_val).strip()))
@@ -479,6 +480,12 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
     txn_data = chosen_row["transaction_json"]
     if isinstance(txn_data, str):
         txn_data = json.loads(txn_data)
+    # Normalize: transaction_json can be a single dict or a list of dicts.
+    # Iterating over a dict gives string keys, not transaction objects.
+    if isinstance(txn_data, dict):
+        txn_data = [txn_data]
+    elif not isinstance(txn_data, list):
+        txn_data = []
 
     clean_txns = [t for t in txn_data if _is_valid_transaction(t)]
     skipped = len(txn_data) - len(clean_txns)
@@ -494,7 +501,8 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
             "account_id": account_id,
             "document_id": document_id,
             "staging_transaction_id": staging_id,
-            "txn_date": txn.get("date"),
+            # Support both "date" (current) and "txn_date" (old staging rows)
+            "txn_date": txn.get("date") or txn.get("txn_date"),
             "debit": txn.get("debit"),
             "credit": txn.get("credit"),
             "balance": txn.get("balance"),
@@ -502,8 +510,33 @@ async def approve_document(document_id: int, user=Depends(get_current_user)):
         }
         for txn in clean_txns
     ]
-    if rows:
+    if not rows:
+        # All transactions were filtered — don't mark APPROVE, tell user clearly
+        logger.warning(
+            "Approve doc=%s — 0 valid transactions after filtering. "
+            "txn_data length=%d. Not marking APPROVE.",
+            document_id, len(txn_data),
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No valid transactions found to approve. "
+                f"All {len(txn_data)} transaction(s) were filtered out as invalid. "
+                f"Check Render logs for details."
+            ),
+        )
+
+    try:
         sb.table("uncategorized_transactions").insert(rows).execute()
+    except Exception as insert_err:
+        logger.error(
+            "Approve doc=%s — uncategorized_transactions INSERT FAILED: %s",
+            document_id, insert_err, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save transactions: {insert_err}",
+        )
 
     sb.table("documents").update({"status": "APPROVE"}).eq("document_id", document_id).execute()
 
