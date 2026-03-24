@@ -3,6 +3,7 @@ python-dotenv
 python-jose[cryptography]
 pdfplumber
 pypdf
+PyPDF2
 google-genai
 bcrypt
 pandas
