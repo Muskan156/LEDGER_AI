@@ -11,14 +11,11 @@ prompts live in services/prompts/*.py.
 import re
 import logging
 from typing import List, Dict, Any
-
-from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
-from services.llm_retry import call_with_retry
 from services.prompts import get_prompt
 from services.code_sandbox import execute_extraction_code, validate_code, clean_llm_code
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+from config import OPENROUTER_API_KEY, OPENROUTER_MODEL_NAME
+from services.llm_retry import call_with_retry
 logger = logging.getLogger("ledgerai.extraction_service")
 
 
@@ -44,11 +41,12 @@ def generate_extraction_logic_llm(
     )
 
     response = call_with_retry(
-        client, GEMINI_MODEL_NAME, prompt,
-        config={"temperature": 0},
+        OPENROUTER_API_KEY,
+        OPENROUTER_MODEL_NAME,
+        prompt
     )
 
-    content = response.text.strip()
+    content = response["choices"][0]["message"]["content"].strip()
     if not content:
         raise ValueError("LLM returned empty extraction code.")
 

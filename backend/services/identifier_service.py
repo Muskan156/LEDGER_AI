@@ -2,16 +2,12 @@ import re
 import json
 import logging
 from typing import Dict, List, Optional
-
-from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
-from services.llm_retry import call_with_retry
 from repository.statement_category_repo import (
     get_all_matchable_formats,
     insert_statement_category,
 )
-
-client = genai.Client(api_key=GEMINI_API_KEY)
+from config import OPENROUTER_API_KEY, OPENROUTER_MODEL_NAME
+from services.llm_retry import call_with_retry
 logger = logging.getLogger("ledgerai.identifier_service")
 
 
@@ -758,11 +754,11 @@ OUTPUT RULES: Return ONLY the JSON object. No markdown. No explanations.
 """
 
     response = call_with_retry(
-        client, GEMINI_MODEL_NAME, prompt,
-        config={"temperature": 0},
+        OPENROUTER_API_KEY,
+        OPENROUTER_MODEL_NAME,
+        prompt
     )
-
-    raw = response.text.strip()
+    raw = response["choices"][0]["message"]["content"].strip()
 
     def sanitize_json(s: str) -> str:
         s = re.sub(r"```(?:json)?", "", s)

@@ -9,12 +9,8 @@ structured transaction JSON directly.
 
 import json
 import logging
-
-from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
+from config import OPENROUTER_API_KEY, OPENROUTER_MODEL_NAME
 from services.llm_retry import call_with_retry
-
-client = genai.Client(api_key=GEMINI_API_KEY)
 logger = logging.getLogger("ledgerai.llm_parser")
 
 
@@ -90,11 +86,12 @@ Return ONLY the JSON array. No markdown. No explanation.
                 doc_family, len(full_text))
 
     response = call_with_retry(
-        client, GEMINI_MODEL_NAME, prompt,
-        config={"temperature": 0},
+        OPENROUTER_API_KEY,
+        OPENROUTER_MODEL_NAME,
+        prompt
     )
 
-    llm_response = response.text.strip()
+    llm_response = response["choices"][0]["message"]["content"].strip()
     logger.info("LLM parse complete: response_len=%d", len(llm_response))
 
     return llm_response

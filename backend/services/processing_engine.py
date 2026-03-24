@@ -43,40 +43,6 @@ logger = logging.getLogger("ledgerai.processing_engine")
 
 
 # ═══════════════════════════════════════════════════════════
-# BUG-01 FIX — Page splitter for extract_pdf_text() output
-# ═══════════════════════════════════════════════════════════
-
-def _split_pages_from_full_text(full_text: str) -> list:
-    
-    blocks = re.split(r'(?:═{10,})', full_text)
-
-    pages = []
-    # Header lines look like:  "  PAGE 1  [BORDERED  H:12 V:5]"
-    page_header_re = re.compile(r'^\s*PAGE\s+\d+\s*\[', re.IGNORECASE)
-
-    for block in blocks:
-        stripped = block.strip()
-        if not stripped:
-            continue
-        # Skip pure page-header lines (the line between the two ════ rows)
-        if page_header_re.match(stripped):
-            continue
-        # Skip single-line blocks that are only a page header
-        lines = [l for l in stripped.splitlines() if l.strip()]
-        if not lines:
-            continue
-        if len(lines) == 1 and page_header_re.match(lines[0]):
-            continue
-        # Remove leading page-header line if it's the first content line
-        if page_header_re.match(lines[0]):
-            lines = lines[1:]
-        if lines:
-            pages.append('\n'.join(lines))
-
-    return pages
-
-
-# ═══════════════════════════════════════════════════════════
 # MAIN PIPELINE
 # ═══════════════════════════════════════════════════════════
 
@@ -132,11 +98,14 @@ def process_document(document_id: int, override_file_path: str = None):
         if not full_text:
             raise ValueError("PDF extraction returned empty text.")
 
-        
-        pages = _split_pages_from_full_text(full_text)
+        # Split full_text into per-page list using the === PAGE N === separators
+        # that EnhancedFinancialPDFExtractor produces
+        pages = [
+            block.strip()
+            for block in re.split(r'={80}', full_text)
+            if block.strip() and not re.fullmatch(r'\s*PAGE\s+\d+\s*', block.strip(), re.IGNORECASE)
+        ]
         if not pages:
-            
-            logger.warning("_split_pages_from_full_text returned empty — using full_text as single page")
             pages = [full_text]
 
         reduced = reduce_text(pages)
