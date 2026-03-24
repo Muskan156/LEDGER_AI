@@ -12,13 +12,16 @@ import re
 import logging
 from typing import List, Dict, Any
 
-from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
+# from google import genai
+# from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
 from services.llm_retry import call_with_retry
 from services.prompts import get_prompt
 from services.code_sandbox import execute_extraction_code, validate_code, clean_llm_code
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# client = genai.Client(api_key=GEMINI_API_KEY)
+import anthropic
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL_NAME
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 logger = logging.getLogger("ledgerai.extraction_service")
 
 
@@ -43,12 +46,16 @@ def generate_extraction_logic_llm(
         document_family, len(prompt),
     )
 
-    response = call_with_retry(
-        client, GEMINI_MODEL_NAME, prompt,
-        config={"temperature": 0},
+    message = client.messages.create(
+        model=ANTHROPIC_MODEL_NAME,
+        max_tokens=8096,
+        temperature=0,
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
     )
-
-    content = response.text.strip()
+ 
+    content = message.content[0].text.strip()
     if not content:
         raise ValueError("LLM returned empty extraction code.")
 
