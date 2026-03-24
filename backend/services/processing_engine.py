@@ -96,7 +96,7 @@ def process_document(document_id: int, override_file_path: str = None):
         full_text = extract_pdf_text(file_path, password)
         if not full_text:
             raise ValueError("PDF extraction returned empty text.")
-        sample_text = full_text[:8000]
+        sample_text = full_text[:20000]
         # Split full_text into per-page list using the === PAGE N === separators
         # that EnhancedFinancialPDFExtractor produces
         pages = [
