@@ -94,7 +94,7 @@ def process_document(document_id: int, override_file_path: str = None):
         update_document_status(document_id, "EXTRACTING_TEXT")
 
         full_text = extract_pdf_text(file_path, password)
-        
+        logger.info("full_text: %s", full_text)
         if not full_text:
             raise ValueError("PDF extraction returned empty text.")
 
