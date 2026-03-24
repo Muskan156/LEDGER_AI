@@ -59,7 +59,6 @@
 #                 continue
 #             else:
 #                 raise
-import os
 import time
 import logging
 import requests
@@ -71,11 +70,11 @@ def call_with_retry(api_key, model, prompt, max_retries=3):
     url = "https://openrouter.ai/api/v1/chat/completions"
 
     headers = {
-        "Authorization": f"Bearer {safe_key}",
-        "Content-Type": "application/json",
-         "HTTP-Referer": "http://localhost:3000",  # change in production
-         "X-Title": "ledger-ai"
-    }
+    "Authorization": f"Bearer {api_key}",
+    "Content-Type": "application/json",
+    "HTTP-Referer": "http://localhost:3000",  # change in production
+    "X-Title": "ledger-ai"
+}
 
     fallback_waits = [5, 10, 20]
 
@@ -105,35 +104,30 @@ def call_with_retry(api_key, model, prompt, max_retries=3):
                 response.raise_for_status()
 
             # For 200 OK, check if OpenRouter returned an error block inside the JSON
-                result = response.json()
-                if "error" in result:
-                    err_msg = result["error"].get("message", "Unknown OpenRouter error")
-                    err_code = result["error"].get("code")
-                    
-                    if err_code == 429 and attempt < max_retries:
-                        wait = fallback_waits[min(attempt, len(fallback_waits) - 1)]
-                        logger.warning(f"Rate limited (429): {err_msg}. Retrying in {wait}s...")
-                        time.sleep(wait)
-                        continue
-                    
-                    raise RuntimeError(f"OpenRouter API Error: {err_msg} (code={err_code})")
+            result = response.json()
+            if "error" in result:
+                err_msg = result["error"].get("message", "Unknown OpenRouter error")
+                err_code = result["error"].get("code")
+                
+                # If it's a rate limit error (code 429), retry
+                if err_code == 429 and attempt < max_retries:
+                    wait = fallback_waits[min(attempt, len(fallback_waits) - 1)]
+                    logger.warning(f"OpenRouter Rate Limit Error (429): {err_msg}. Retrying in {wait}s...")
+                    time.sleep(wait)
+                    continue
+                
+                # If it's another error, raise it
+                raise RuntimeError(f"OpenRouter API Error: {err_msg} (code={err_code})")
 
-                if "choices" not in result:
-                    raise ValueError(f"OpenRouter response missing 'choices': {result}")
+            # Check if choices is present
+            if "choices" not in result:
+                raise ValueError(f"OpenRouter response missing 'choices' field: {result}")
 
-                return result
-
-            # Handle rate limit (HTTP 429)
-            if response.status_code == 429 and attempt < max_retries:
-                wait = fallback_waits[min(attempt, len(fallback_waits) - 1)]
-                logger.warning(f"Rate limited (429). Retrying in {wait}s...")
-                time.sleep(wait)
-                continue
-
-            response.raise_for_status()
+            return result
 
         except Exception as e:
-            if attempt < max_retries and not isinstance(e, requests.HTTPError):
+            if attempt < max_retries:
+                # Retry on connection/timeout issues as well
                 wait = fallback_waits[min(attempt, len(fallback_waits) - 1)]
                 logger.warning(f"Attempt {attempt+1} failed: {e}. Retrying in {wait}s...")
                 time.sleep(wait)
