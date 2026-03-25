@@ -4,7 +4,7 @@ import logging
 from typing import Dict, List, Optional
 
 from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
+from config import GEMINI_API_KEY, CLASSIFIER_MODEL
 from services.llm_retry import call_with_retry
 from repository.statement_category_repo import (
     get_all_matchable_formats,
@@ -470,7 +470,7 @@ def classify_document_llm(pages: List[str]) -> Dict:
 
     response = call_with_retry(
         client,
-        GEMINI_MODEL_NAME,
+        CLASSIFIER_MODEL,
         user_message,
         system=_IDENTIFICATION_PROMPT,
         config={"temperature": 0},
