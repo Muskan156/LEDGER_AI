@@ -15,7 +15,7 @@ Generate COMPLETE, EXECUTABLE Python code to extract ALL transactions from this 
 DOCUMENT INFO
 ══════════════════════════════════════════════════════════════
 Document Type: {doc_family}
-Institution: {institution_name}
+Institution: {institution}
 
 ══════════════════════════════════════════════════════════════
 ACTUAL DOCUMENT SAMPLE TEXT
