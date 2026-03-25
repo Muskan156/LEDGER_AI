@@ -472,7 +472,7 @@ def classify_document_llm(pages: List[str]) -> Dict:
         client,
         CLASSIFIER_MODEL,
         user_message,
-        system=_IDENTIFICATION_PROMPT,
+        _IDENTIFICATION_PROMPT,
         config={"temperature": 0},
     )
 
