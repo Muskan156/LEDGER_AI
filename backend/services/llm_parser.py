@@ -11,7 +11,7 @@ import json
 import logging
 
 from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
+from config import GEMINI_API_KEY, LLM_PARSER_MODEL
 from services.llm_retry import call_with_retry
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -90,7 +90,7 @@ Return ONLY the JSON array. No markdown. No explanation.
                 doc_family, len(full_text))
 
     response = call_with_retry(
-        client, GEMINI_MODEL_NAME, prompt,
+        client, LLM_PARSER_MODEL, prompt,
         config={"temperature": 0},
     )
 

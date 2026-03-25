@@ -147,7 +147,7 @@ import logging
 from typing import List, Dict, Any
 
 from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL_NAME
+from config import GEMINI_API_KEY, CODE_GEN_MODEL
 from services.llm_retry import call_with_retry
 from services.prompts import get_prompt
 from services.code_sandbox import execute_extraction_code, validate_code, clean_llm_code
@@ -178,7 +178,7 @@ def generate_extraction_logic_llm(
     )
 
     response = call_with_retry(
-        client, GEMINI_MODEL_NAME, prompt,
+        client, CODE_GEN_MODEL, prompt,
         config={"temperature": 0},
     )
 
