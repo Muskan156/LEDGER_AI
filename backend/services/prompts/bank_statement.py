@@ -82,7 +82,7 @@ The code should:
 1. Define extract_transactions() function
 2. Define parse_date() function  
 3. Define parse_amount() function
-4. At the end: call extract_transactions(text) and print JSON
+4. At the end: call extract_transactions(text)
  
 Example output structure:
 [
