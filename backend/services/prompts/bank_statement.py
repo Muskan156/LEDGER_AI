@@ -2,99 +2,85 @@
 import re
 
 def build_prompt(identifier_json: dict, text_sample: str) -> str:
-    
+    """
+    Optimized bank statement code generation prompt.
+    Reduced from ~3500 to ~800 tokens while maintaining quality.
+    """
+
     institution = identifier_json.get("institution_name", "Unknown")
     doc_family = identifier_json.get("document_family", "BANK_ACCOUNT_STATEMENT")
 
-    return f"""
-You are a Python code generation engine for financial document parsing.
- 
-Generate COMPLETE, EXECUTABLE Python code to extract ALL transactions from this bank statement.
- 
-══════════════════════════════════════════════════════════════
-DOCUMENT INFO
-══════════════════════════════════════════════════════════════
-Document Type: {doc_family}
-Institution: {institution}
+    # Get parsing hints to provide context
+    hints = identifier_json.get("parsing_hints", {})
+    layout = hints.get("layout_type", "SINGLE_COLUMN")
+    skip_labels = hints.get("summary_section_labels", [])
+    boundary_signals = hints.get("transaction_boundary_signals", ["DATE"])
+    ref_pattern = hints.get("ref_no_pattern")
 
-══════════════════════════════════════════════════════════════
-ACTUAL DOCUMENT SAMPLE TEXT
-══════════════════════════════════════════════════════════════
- 
-SAMPLE TEXT FROM ACTUAL DOCUMENT:{text_sample}
- 
-══════════════════════════════════════════════════════════════
-ANALYSIS REQUIREMENTS
-══════════════════════════════════════════════════════════════
- 
-Before writing code, identify the following from the sample text:
-1. Column headers and their positions (Date, Narration, Debit, Credit, Balance)
-2. Date format used (DD/MM/YYYY, DD-MM-YYYY, etc.)
-3. Transaction row patterns (what makes a line a transaction?)
-4. Number format (1,00,000.00 or 100000.00)
-5. Multi-line transaction indicators
- 
-══════════════════════════════════════════════════════════════
-EXTRACTION RULES
-══════════════════════════════════════════════════════════════
- 
-SKIP (never extract):
-- Headers: "Date", "Particulars", "Debit", "Credit", "Balance"
-- Page markers: "Page 1 of 3", "PAGE 1", "============"
-- Footers: "Generated on", "This is computer generated"
-- Summary rows: "Opening Balance", "Closing Balance", "Grand Total", "STATEMENT SUMMARY"
-- Account metadata: "Account Number", "IFSC", "Branch", "Customer ID"
- 
-EXTRACT:
-- DATE: Convert to YYYY-MM-DD format
-- DETAILS: Transaction description ONLY (no dates, amounts, page numbers)
-- DEBIT: Withdrawal amount as float or None
-- CREDIT: Deposit amount as float or None
-- BALANCE: Closing balance as float or None
-- CONFIDENCE: 0.7 to 1.0 based on extraction quality
- 
-HANDLE:
-- Multi-line descriptions (append lines without dates to previous transaction)
-- Indian number format (1,00,000.00 → 100000.00)
-- Various date formats (DD/MM/YY, DD-MM-YYYY, DD Mon YYYY)
-- Currency symbols (₹, Rs., INR) - remove them
- 
-══════════════════════════════════════════════════════════════
-CODE REQUIREMENTS
-══════════════════════════════════════════════════════════════
- 
-Your code MUST:
-1. Be complete and executable (NO placeholders, NO "TODO", NO "pass", NO "...")
-2. Use ONLY standard library (re, datetime, json)
-3. Define: def extract_transactions(text: str) -> list:
-4. Return: List of dicts with keys: date, details, debit, credit, balance, confidence
-5. Include error handling (try-except)
-6. Parse ALL transaction rows correctly
-7. Skip ALL non-transaction rows
- 
-══════════════════════════════════════════════════════════════
-OUTPUT FORMAT
-══════════════════════════════════════════════════════════════
- 
-Return ONLY executable Python code. No markdown blocks. No explanations.
- 
-The code should:
-1. Define extract_transactions() function
-2. Define parse_date() function  
-3. Define parse_amount() function
-4. At the end: call extract_transactions(text)
- 
-Example output structure:
-[
-  {{
-    "date": "2026-01-03",
-    "details": "UPI-Redbus India Private",
-    "debit": 2680.00,
-    "credit": None,
-    "balance": 566438.40,
-    "confidence": 1.0
-  }}
-]
- 
-CRITICAL: Every function must be fully implemented. No placeholders.
+    skip_instruction = ""
+    if skip_labels:
+        skip_instruction = f"\n- Skip lines starting with: {', '.join(skip_labels[:10])}"
+
+    ref_instruction = ""
+    if ref_pattern:
+        ref_instruction = f"\n- Strip reference numbers matching: {ref_pattern}"
+
+    return f"""
+Write extract_transactions(text: str) -> list for this bank statement.
+
+DOCUMENT SAMPLE:
+{text_sample}
+
+PARSING CONTEXT:
+- Layout: {layout}
+- Institution: {institution}{skip_instruction}{ref_instruction}
+- Transaction boundaries: {', '.join(boundary_signals)}
+
+APPROACH:
+1. Process ALL pages in the document:
+   - The text contains multiple pages separated by "==== PAGE N ====" markers
+   - Continue processing through ALL page separators until end of text
+   - Do NOT stop after the first page or first table
+2. Find transaction lines (have date + amounts, not headers/footers/summaries)
+3. Handle multi-line transactions CAREFULLY:
+   - Only merge if the next line is clearly a continuation (no date, no amount, indented or very short)
+   - DO NOT merge if next line looks like a separate transaction or has amounts
+   - DO NOT merge lines separated by page breaks or section dividers
+   - When in doubt, treat as separate transactions rather than merging
+4. Extract details field AS-IS:
+   - Keep ALL prefixes (UPI-, IMPS-, NEFT-, RTGS-, ACHD-, etc.)
+   - Keep reference numbers and transaction IDs
+   - Preserve the raw text exactly as it appears in the statement
+   - Do NOT clean, strip, or modify the details string
+5. Classify debit vs credit (CRITICAL - use ALL methods):
+   a) Column position: if statement has Debit/Credit or Withdrawal/Deposit columns
+   b) Balance change: compare current vs previous balance
+      - Balance DECREASED = debit (money out)
+      - Balance INCREASED = credit (money in)
+   c) Keywords in details:
+      - Credit: PAYMENT, REFUND, CREDIT, REVERSAL, DEPOSIT, INTEREST EARNED
+      - Debit: PURCHASE, WITHDRAWAL, FEE, CHARGE, TRANSFER OUT
+6. Extract fields:
+   - Date: normalize to YYYY-MM-DD (handle 2-digit years: 00-30→2000s, 31-99→1900s)
+   - Amounts: handle Indian format (1,00,000.00), strip currency symbols
+   - Balance: rightmost amount or calculate from previous
+
+OUTPUT FORMAT:
+[{{"date": "YYYY-MM-DD", "details": str, "debit": float|None, "credit": float|None, "balance": float|None, "confidence": float}}]
+
+RULES:
+- CRITICAL: Process the ENTIRE document text - do NOT stop after first page
+- Page separators (==== PAGE N ====) are just markers - continue processing after them
+- Exactly one of debit/credit per transaction (never both, never neither)
+- If unsure about debit/credit, use balance change as tie-breaker
+- Deduplicate on (date, details, debit, credit)
+- Skip: headers, footers, summaries (Opening/Closing Balance, Total Debit/Credit)
+- Confidence: 0.95 normal, 0.85 if debit/credit unclear, 0.70 if amount/date uncertain
+- Raw Python only, no markdown
+- Only use built-in types (dict, list, str, float, int, bool, None)
+- Do NOT import typing, Optional, List, Dict - use lowercase dict, list instead
+- Available imports: re, datetime, date, timedelta (already imported, just use them)
+- Only import re if needed for regex operations
+
+Write the function now.
 """

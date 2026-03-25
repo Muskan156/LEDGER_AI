@@ -5,9 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from services.pdf_service import extract_pdf_text
 from services.identifier_service import (
-    reduce_text,
-    find_existing_identifier,
     classify_document_llm,
+    check_format_exists,
     save_new_statement_format,
 )
 from services.extraction_service import (
@@ -107,11 +106,9 @@ def process_document(document_id: int, override_file_path: str = None):
         if not pages:
             pages = [full_text]
 
-        reduced = reduce_text(pages)
 
         logger.info("pages     : %d", len(pages))
         logger.info("chars     : %d", len(full_text))
-        logger.info("first_page_len : %d", len(reduced.get("first_page", "")))
         logger.info("Text extracted successfully")
         logger.info("═" * 70)
 
@@ -119,11 +116,27 @@ def process_document(document_id: int, override_file_path: str = None):
         update_document_status(document_id, "IDENTIFYING_FORMAT")
 
         # ─────────────────────────────────────────────────────
-        # STEP 3 — FORMAT CHECK IN DATABASE
+        # STEP 3 — CLASSIFY via LLM, then check DB for existing match
+        # check_format_exists needs the identifier_json (institution +
+        # format_name + table columns), so we always classify first.
         # ─────────────────────────────────────────────────────
         logger.info("")
-        logger.info("[STEP 3/5] Checking if format exists in database...")
-        matched, existing = find_existing_identifier(full_text)
+        logger.info("[STEP 3/5] Generating identification markers via LLM...")
+
+        identity_json = classify_document_llm(pages)
+
+        logger.info("Family      : %s", identity_json.get("document_family", "?"))
+        logger.info("Institution : %s", identity_json.get("institution_name", "?"))
+        logger.info("Layout      : %s", identity_json.get("parsing_hints", {}).get("layout_type", "?"))
+        logger.info("Boundaries  : %s", identity_json.get("parsing_hints", {}).get("transaction_boundary_signals"))
+        logger.info("ID          : %s", identity_json.get("id"))
+        logger.info("Identification markers generated")
+        logger.info("═" * 70)
+
+        logger.info("")
+        logger.info("[STEP 3b/5] Checking if format exists in database...")
+        existing = check_format_exists(identity_json)
+        matched  = existing is not None
 
         if matched:
             logger.info("EXISTING FORMAT DETECTED")
@@ -131,7 +144,7 @@ def process_document(document_id: int, override_file_path: str = None):
             logger.info("statement : %s", existing.get("statement_id"))
             logger.info("status    : %s", existing.get("status"))
         else:
-            logger.info("NO MATCHING FORMAT — new format detected")
+            logger.info("NO MATCHING FORMAT — new format will be saved")
         logger.info("═" * 70)
 
         update_document_status(document_id, "PARSING_TRANSACTIONS")
@@ -140,6 +153,7 @@ def process_document(document_id: int, override_file_path: str = None):
         # CASE A — FORMAT EXISTS IN DB
         # ═══════════════════════════════════════════════════
         if matched:
+            # Use the stored identifier_json and extraction code from DB
             identity_json    = existing.get("statement_identifier", {})
             extraction_code  = existing["extraction_logic"]
             statement_id     = existing["statement_id"]
@@ -181,21 +195,9 @@ def process_document(document_id: int, override_file_path: str = None):
             logger.info("Format status is %s — continuing to dual pipeline...", statement_status)
 
         # ═══════════════════════════════════════════════════
-        # CASE B — NEW FORMAT → CLASSIFY + GENERATE
+        # CASE B — NEW FORMAT → GENERATE EXTRACTION CODE + SAVE
         # ═══════════════════════════════════════════════════
         else:
-            logger.info("")
-            logger.info("[STEP 3b/5] NEW FORMAT — generating identification markers via LLM...")
-
-            identity_json = classify_document_llm(reduced)
-
-            logger.info("Family      : %s", identity_json.get("document_family", "?"))
-            logger.info("Institution : %s", identity_json.get("institution_name", "?"))
-            logger.info("Layout      : %s", identity_json.get("parsing_hints", {}).get("layout_type", "?"))
-            logger.info("Boundaries  : %s", identity_json.get("parsing_hints", {}).get("transaction_boundary_signals"))
-            logger.info("Identifiers generated")
-            logger.info("═" * 70)
-
             logger.info("")
             logger.info("[STEP 3c/5] Generating extraction code via LLM...")
             extraction_code = generate_extraction_logic_llm(

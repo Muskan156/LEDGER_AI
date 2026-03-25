@@ -135,7 +135,7 @@
 """
 services/extraction_service.py
 ──────────────────────────────
-STEP 4 — Generate extraction code via LLM (Gemini)
+STEP 4 — Generate extraction code via LLM (Claude/OpenRouter/9router)
 and execute it safely against document text.
 
 This module is the thin orchestrator. All document-family-specific
@@ -146,13 +146,10 @@ import re
 import logging
 from typing import List, Dict, Any
 
-from google import genai
-from config import GEMINI_API_KEY, CODE_GEN_MODEL
-from services.llm_retry import call_with_retry
+from services.code_gen_client import get_code_gen_client
 from services.prompts import get_prompt
 from services.code_sandbox import execute_extraction_code, validate_code, clean_llm_code
 
-client = genai.Client(api_key=GEMINI_API_KEY)
 logger = logging.getLogger("ledgerai.extraction_service")
 
 
@@ -166,6 +163,7 @@ def generate_extraction_logic_llm(
 ) -> str:
     """
     Generates extraction code using the family-specific prompt from services/prompts/.
+    Uses Claude (via Anthropic/OpenRouter/9router) for better code quality.
     Returns validated Python code string containing extract_transactions().
     """
     document_family = identifier_json.get("document_family", "BANK_ACCOUNT_STATEMENT")
@@ -177,12 +175,12 @@ def generate_extraction_logic_llm(
         document_family, len(prompt),
     )
 
-    response = call_with_retry(
-        client, CODE_GEN_MODEL, prompt,
-        config={"temperature": 0},
-    )
+    # Get the configured code generation client (Claude via Anthropic/OpenRouter/9router)
+    code_gen_client = get_code_gen_client()
 
-    content = response.text.strip()
+    # Generate code with retry logic built into the client
+    content = code_gen_client.generate(prompt, max_retries=3)
+
     if not content:
         raise ValueError("LLM returned empty extraction code.")
 
