@@ -1,62 +1,67 @@
 def build_prompt(identifier_json: dict, text_sample: str) -> str:
     institution = identifier_json.get("institution_name", "Unknown")
 
+    # Get parsing hints to provide context
+    hints = identifier_json.get("parsing_hints", {})
+    skip_labels = hints.get("summary_section_labels", [])
+    layout = hints.get("layout_type", "SINGLE_COLUMN")
+
+    skip_instruction = ""
+    if skip_labels:
+        skip_instruction = f"\n- Skip lines starting with: {', '.join(skip_labels[:10])}"
+
     return f"""
-You are a Python engineer. Write a Python function that extracts transactions
-from an Indian credit card statement.
+Write extract_transactions(text: str) -> list for {institution} credit card statements.
 
-The function will be called with the raw extracted text of a real statement.
-A sample of that text is provided below so you can observe its structure.
-
-════════════════════════════════════════════
-SAMPLE DOCUMENT TEXT
-════════════════════════════════════════════
-
+SAMPLE FROM ONE STATEMENT (your code must work for ALL similar statements, not just this one):
 {text_sample}
 
-════════════════════════════════════════════
-YOUR TASK
-════════════════════════════════════════════
+PARSING CONTEXT:
+- Layout: {layout}
+- Institution: {institution}{skip_instruction}
 
-Read the sample text above the way a human reads a bank statement.
-You already understand what a credit card transaction is:
-  - it has a date
-  - it has a payee or description
-  - it has an amount
-  - it is either a debit (money spent) or a credit (payment/refund/waiver)
+CRITICAL: Your code must be ROBUST and handle variations:
+- Different transaction descriptions and merchants
+- Varying amounts of whitespace and alignment
+- Extra text, noise, or formatting differences between statements
+- Different page breaks or promotional content
+- Use the sample to understand the PATTERN, not to hardcode specific text
 
-Using that understanding, write extract_transactions(text) so that when
-called with any page of this statement it returns all transactions and
-skips everything else (summaries, headers, offers, footers text, T&C text).
+TASK:
+Extract all transactions (date + description + amount).
+Skip: headers, footers, summaries, offers, T&C text, page numbers, noise.
 
-Do not write a rigid line-by-line regex parser.
-Write code that finds transactions the same way you would find them by
-reading — using context and meaning, not just pattern position.
+STEPS:
+1. Find transaction lines (date + description + amount) using PATTERN MATCHING
+2. Handle multi-line: merge continuation lines without dates CAREFULLY (only if clearly a continuation)
+   - DO NOT merge noise lines (page numbers, headers, footers, random text)
+   - Use patterns to identify valid continuations, not exact strings
+3. Extract details AS-IS:
+   - Keep ALL prefixes (UPI-, IMPS-, etc.)
+   - Keep reference numbers and transaction IDs
+   - Preserve raw text exactly as it appears
+   - Do NOT clean, strip, or modify the details string
+4. Classify debit vs credit:
+   - Credit (money in): PAYMENT, REFUND, CREDIT, REVERSAL, WAIVER, CASHBACK
+   - Debit (money out): all purchases, fees, charges, interest
+   - For credit cards: most transactions are debits (charges), payments are credits
 
-def extract_transactions(text: str) -> list:
-    \"\"\"
-    Returns list of dicts — one per transaction, in document order:
-    {{
-        "date"      : str,          # DD/MM/YYYY — zero-padded, 4-digit year
-        "details"   : str,          # payee/description exactly as it appears
-                                    # in the statement — do not add or remove words
-        "debit"     : float | None, # amount spent — None if this is a credit
-        "credit"    : float | None, # amount received — None if this is a debit
-        "balance"   : float | None, # always None for credit cards
-        "confidence": float         # 0.95 normal transaction
-                                    # 0.92 fee / surcharge / tax
-                                    # 0.70 uncertain
-    }}
-    \"\"\"
+OUTPUT:
+[{{"date": "YYYY-MM-DD", "details": str, "debit": float|None, "credit": float|None, "balance": None, "confidence": float}}]
 
-════════════════════════════════════════════
-RULES
-════════════════════════════════════════════
+RULES:
+- Write GENERIC code using patterns (regex, keywords), NOT hardcoded strings
+- Exactly one of debit/credit per transaction (never both, never neither)
+- Normalize dates to YYYY-MM-DD format
+- Deduplicate on (date, details, debit, credit)
+- Filter out lines that don't match transaction patterns (no date or no amount = not a transaction)
+- Skip noise: page numbers, promotional text, terms & conditions, headers, footers
+- Confidence: 0.95 normal, 0.85 if debit/credit unclear, 0.70 uncertain
+- Raw Python only, no markdown
+- Only use built-in types (dict, list, str, float, int, bool, None)
+- Do NOT import typing, Optional, List, Dict - use lowercase dict, list instead
+- Available imports: re, datetime, date, timedelta (already imported, just use them)
+- Only import re if needed for regex operations
 
-- Raw Python only. No markdown fences. No imports except re (pre-injected).
-- Exactly one of debit or credit per transaction. Never both. Never neither.
-- Deduplicate on (date, details, debit, credit) — keep first occurrence.
-- Return [] if text is clearly not from {institution}.
-
-The function must begin with exactly: def extract_transactions(text: str) -> list:
+Write the function now.
 """

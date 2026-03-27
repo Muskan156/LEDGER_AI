@@ -22,7 +22,7 @@ BLOCKED_BUILTINS = {"open", "eval", "exec", "compile", "__import__"}
 BLOCKED_MODULES = {"subprocess", "os", "sys", "shutil", "pathlib"}
 
 # Modules the LLM is allowed to import (safe, pure-computation only)
-ALLOWED_IMPORTS = {"re", "math", "datetime", "collections", "typing"}
+ALLOWED_IMPORTS = {"re", "math", "datetime", "collections", "typing","json","string"}
 
 
 def validate_code(code: str) -> Optional[str]:

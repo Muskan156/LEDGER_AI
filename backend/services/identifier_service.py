@@ -238,10 +238,29 @@ def check_format_exists(
 
 
 # ════════════════════════════════════════════════════════════
-# IDENTIFICATION PROMPT  (taken verbatim from identifier.py)
+# CLASSIFY DOCUMENT — GENERATE IDENTIFICATION JSON  (LLM)
 # ════════════════════════════════════════════════════════════
 
-_IDENTIFICATION_PROMPT = """
+def classify_document_llm(pages: List[str]) -> Dict:
+    """
+    Generate the identification marker JSON for a new document.
+
+    The identification prompt is defined inline as a local variable.
+    Sends only the first 2-3 pages to the LLM to conserve tokens —
+    structural signals (title, column headers, account/entity patterns)
+    are always present within the first pages of a financial statement.
+
+    Args:
+        pages: Per-page text list produced by the page-split logic in
+               processing_engine.py.
+
+    Returns:
+        Parsed identification JSON dict with institution_name normalised.
+    """
+    # ── Build page text (first 2-3 pages only) ───────────────────────────────
+    first_pages_text = _get_first_pages_text(pages, max_pages=3)
+
+    prompt = f"""
 You are a financial document structure analyst. Your task is to analyze a financial statement PDF and generate a comprehensive identification marker JSON that captures all unique structural, textual, and formatting patterns that distinguish this specific statement type.
 
 ══════════════════════════════════════════════════════════════════════════════
@@ -339,9 +358,9 @@ REGEX PATTERN RULES
 - Use Python regex syntax
 - Escape special characters properly (\\\\d, \\\\s, \\\\., etc.)
 - Make patterns specific but flexible enough to handle minor variations
-- Use named groups where helpful: (?P<account>\\\\d{10,16})
-- For dates, match actual format seen (e.g., "\\\\d{2}-[A-Z][a-z]{2}-\\\\d{4}" for "01-Jan-2024")
-- For amounts, match format with commas/decimals: "[\\\\d,]+\\\\.\\\\d{2}"
+- Use named groups where helpful: (?P<account>\\\\d{{10,16}})
+- For dates, match actual format seen (e.g., "\\\\d{{2}}-[A-Z][a-z]{{2}}-\\\\d{{4}}" for "01-Jan-2024")
+- For amounts, match format with commas/decimals: "[\\\\d,]+\\\\.\\\\d{{2}}"
 - Return null if a field is not applicable to this statement type
 
 ══════════════════════════════════════════════════════════════════════════════
@@ -349,7 +368,7 @@ OUTPUT FORMAT
 ══════════════════════════════════════════════════════════════════════════════
 Return ONLY valid JSON matching this exact structure:
 
-{
+{{
   "id": "[document_family]_[institution]_[subtype]_V1",
   "document_family": "BANK_STATEMENT|CREDIT_CARD|WALLET|LOAN|INVESTMENT|INSURANCE|TAX|OTHER",
   "document_subtype": "<e.g., Savings, Current, Platinum Card>",
@@ -357,11 +376,11 @@ Return ONLY valid JSON matching this exact structure:
   "country": "India",
   "confidence_score": 0.95,
 
-  "exclusion_markers": {
+  "exclusion_markers": {{
     "patterns": ["pattern1", "pattern2", "..."]
-  },
+  }},
 
-  "parsing_hints": {
+  "parsing_hints": {{
     "layout_type": "SINGLE_COLUMN|TWO_COLUMN_PDF|MULTI_SECTION",
     "summary_section_labels": ["label1", "label2"],
     "transaction_boundary_signals": ["DATE"],
@@ -369,61 +388,61 @@ Return ONLY valid JSON matching this exact structure:
     "page_break_pattern": "Page \\\\d+ of \\\\d+",
     "details_strip_patterns": ["pattern1", "pattern2"],
     "known_summary_amounts": ["amount1", "amount2"]
-  },
+  }},
 
-  "identity_markers": {
-    "issuer_identity": {
-      "issuer_name": { "rule": "keyword", "patterns": ["exact name"] },
-      "regulatory_identifiers": {
-        "ifsc": { "rule": "regex", "pattern": "<regex or null>" },
-        "swift": { "rule": "regex", "pattern": "<regex or null>" },
-        "iban": { "rule": "regex", "pattern": "<regex or null>" },
-        "gstin": { "rule": "regex", "pattern": "<regex or null>" },
+  "identity_markers": {{
+    "issuer_identity": {{
+      "issuer_name": {{ "rule": "keyword", "patterns": ["exact name"] }},
+      "regulatory_identifiers": {{
+        "ifsc": {{ "rule": "regex", "pattern": "<regex or null>" }},
+        "swift": {{ "rule": "regex", "pattern": "<regex or null>" }},
+        "iban": {{ "rule": "regex", "pattern": "<regex or null>" }},
+        "gstin": {{ "rule": "regex", "pattern": "<regex or null>" }},
         "other": []
-      }
-    },
-    "document_structure_identity": {
-      "document_title_phrase": { "rule": "keyword", "patterns": ["EXACT TITLE"] },
-      "document_reference_number": { "rule": "regex", "pattern": "<regex or null>" },
-      "generation_phrase": { "rule": "keyword", "patterns": ["Generated on", "Statement Date"] }
-    },
-    "period_identity": {
-      "statement_period": { "rule": "regex", "pattern": "<regex or null>" },
-      "statement_date": { "rule": "regex", "pattern": "<regex or null>" },
-      "billing_cycle": { "rule": "regex", "pattern": "<regex or null>" },
-      "tax_period": { "rule": "regex", "pattern": "<regex or null>" }
-    },
-    "entity_identity": {
-      "account_number": { "rule": "regex", "pattern": "<regex or null>" },
-      "masked_card_number": { "rule": "regex", "pattern": "<regex or null>" },
-      "loan_account_number": { "rule": "regex", "pattern": "<regex or null>" },
-      "customer_id": { "rule": "regex", "pattern": "<regex or null>" },
-      "wallet_id": { "rule": "regex", "pattern": "<regex or null>" },
-      "merchant_id": { "rule": "regex", "pattern": "<regex or null>" },
-      "pan": { "rule": "regex", "pattern": "<regex or null>" },
-      "bo_id": { "rule": "regex", "pattern": "<regex or null>" },
-      "dp_id": { "rule": "regex", "pattern": "<regex or null>" }
-    },
-    "transaction_table_identity": {
+      }}
+    }},
+    "document_structure_identity": {{
+      "document_title_phrase": {{ "rule": "keyword", "patterns": ["EXACT TITLE"] }},
+      "document_reference_number": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "generation_phrase": {{ "rule": "keyword", "patterns": ["Generated on", "Statement Date"] }}
+    }},
+    "period_identity": {{
+      "statement_period": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "statement_date": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "billing_cycle": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "tax_period": {{ "rule": "regex", "pattern": "<regex or null>" }}
+    }},
+    "entity_identity": {{
+      "account_number": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "masked_card_number": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "loan_account_number": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "customer_id": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "wallet_id": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "merchant_id": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "pan": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "bo_id": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "dp_id": {{ "rule": "regex", "pattern": "<regex or null>" }}
+    }},
+    "transaction_table_identity": {{
       "table_header_markers": ["Column1", "Column2", "Column3"],
       "minimum_column_count": 4,
       "presence_of_running_balance": true,
       "debit_credit_style": true
-    },
-    "financial_summary_identity": {
-      "total_outstanding": { "rule": "regex", "pattern": "<regex or null>" },
-      "minimum_due": { "rule": "regex", "pattern": "<regex or null>" },
-      "emi_amount": { "rule": "regex", "pattern": "<regex or null>" },
-      "credit_limit": { "rule": "regex", "pattern": "<regex or null>" },
-      "drawing_power": { "rule": "regex", "pattern": "<regex or null>" },
-      "portfolio_value": { "rule": "regex", "pattern": "<regex or null>" },
-      "total_tax": { "rule": "regex", "pattern": "<regex or null>" }
-    },
-    "footer_identity": {
+    }},
+    "financial_summary_identity": {{
+      "total_outstanding": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "minimum_due": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "emi_amount": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "credit_limit": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "drawing_power": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "portfolio_value": {{ "rule": "regex", "pattern": "<regex or null>" }},
+      "total_tax": {{ "rule": "regex", "pattern": "<regex or null>" }}
+    }},
+    "footer_identity": {{
       "footer_markers": ["footer text pattern 1", "footer text pattern 2"]
-    }
-  }
-}
+    }}
+  }}
+}}
 
 ══════════════════════════════════════════════════════════════════════════════
 CRITICAL OUTPUT RULES
@@ -437,42 +456,14 @@ CRITICAL OUTPUT RULES
 ✓ confidence_score must be between 0.0 and 1.0
 
 BEGIN ANALYSIS OF THE PROVIDED FINANCIAL STATEMENT NOW.
+
+Analyze this financial statement and generate identification markers:
+
+{first_pages_text}
 """
 
-
-# ════════════════════════════════════════════════════════════
-# CLASSIFY DOCUMENT — GENERATE IDENTIFICATION JSON  (LLM)
-# ════════════════════════════════════════════════════════════
-
-def classify_document_llm(pages: List[str]) -> Dict:
-    """
-    Generate the identification marker JSON for a new document.
-
-    Uses identifier.py's IDENTIFICATION_PROMPT as the system prompt.
-    Sends only the first 2-3 pages to the LLM to conserve tokens —
-    structural signals (title, column headers, account/entity patterns)
-    are always present within the first pages of a financial statement.
-
-    Args:
-        pages: Per-page text list produced by the page-split logic in
-               processing_engine.py.
-
-    Returns:
-        Parsed identification JSON dict with institution_name normalised.
-    """
-    # ── Build page text (first 2-3 pages only) ───────────────────────────────
-    first_pages_text = _get_first_pages_text(pages, max_pages=3)
-
-    user_message = (
-        "Analyze this financial statement and generate identification markers:\n\n"
-        f"{first_pages_text}"
-    )
-
     response = call_with_retry(
-        client,
-        CLASSIFIER_MODEL,
-        user_message,
-        _IDENTIFICATION_PROMPT,
+        client, CLASSIFIER_MODEL, prompt,
         config={"temperature": 0},
     )
 

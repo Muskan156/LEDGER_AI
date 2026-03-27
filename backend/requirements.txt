@@ -16,3 +16,4 @@ httpx
 email-validator
 python-multipart
 requests
+anthropic
